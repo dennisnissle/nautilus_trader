@@ -44,6 +44,7 @@ from nautilus_trader.indicators.momentum import CommodityChannelIndex
 from nautilus_trader.indicators.momentum import EfficiencyRatio
 from nautilus_trader.indicators.momentum import PsychologicalLine
 from nautilus_trader.indicators.momentum import RateOfChange
+from nautilus_trader.indicators.momentum import RateOfChangeRatioSMA
 from nautilus_trader.indicators.momentum import RelativeStrengthIndex
 from nautilus_trader.indicators.momentum import RelativeVolatilityIndex
 from nautilus_trader.indicators.momentum import Stochastics
@@ -102,6 +103,7 @@ __all__ = [
     "Pressure",
     "PsychologicalLine",
     "RateOfChange",
+    "RateOfChangeRatioSMA",
     "RelativeStrengthIndex",
     "RelativeVolatilityIndex",
     "SimpleMovingAverage",

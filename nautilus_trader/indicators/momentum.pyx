@@ -216,6 +216,58 @@ cdef class RateOfChange(Indicator):
         self._prices.clear()
         self.value = 0
 
+cdef class RateOfChangeRatioSMA(Indicator):
+    def __init__(self, int period, int sma_period):
+        from nautilus_trader.indicators.averages import MovingAverageFactory
+        from nautilus_trader.indicators.averages import MovingAverageType
+
+        Condition.is_true(period > 1, "period was <= 1")
+        super().__init__(params=[period])
+
+        self.period = period
+        self._prices = deque(maxlen=period)
+        self.value = 0
+        self.sma_period = sma_period
+        self._average_close = MovingAverageFactory.create(sma_period, MovingAverageType.SIMPLE)
+
+    cpdef void handle_bar(self, Bar bar):
+        """
+        Update the indicator with the given bar.
+
+        Parameters
+        ----------
+        bar : Bar
+            The update bar.
+
+        """
+        Condition.not_none(bar, "bar")
+
+        self._average_close.update_raw(bar.close.as_double())
+        self.update_raw(self._average_close.value)
+
+    cpdef void update_raw(self, double price):
+        """
+        Update the indicator with the given price.
+
+        Parameters
+        ----------
+        price : double
+            The update price.
+
+        """
+        self._prices.append(price)
+
+        if not self.initialized:
+            self._set_has_inputs(True)
+            if len(self._prices) >= self.period and self._average_close.initialized:
+                self._set_initialized(True)
+
+        self.value = price / self._prices[0]
+
+    cpdef void _reset(self):
+        self._prices.clear()
+        self._average_close.reset()
+        self.value = 0
 
 cdef class ChandeMomentumOscillator(Indicator):
     """

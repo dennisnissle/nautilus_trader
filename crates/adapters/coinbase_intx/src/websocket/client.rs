@@ -25,9 +25,9 @@ use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
-use nautilus_common::{logging::log_task_stopped, runtime::get_runtime};
+use nautilus_common::{live::runtime::get_runtime, logging::log_task_stopped};
 use nautilus_core::{
-    consts::NAUTILUS_USER_AGENT, env::get_env_var, time::get_atomic_clock_realtime,
+    consts::NAUTILUS_USER_AGENT, env::get_or_env_var, time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
@@ -93,9 +93,9 @@ impl CoinbaseIntxWebSocketClient {
         heartbeat: Option<u64>,
     ) -> anyhow::Result<Self> {
         let url = url.unwrap_or(COINBASE_INTX_WS_URL.to_string());
-        let api_key = api_key.unwrap_or(get_env_var("COINBASE_INTX_API_KEY")?);
-        let api_secret = api_secret.unwrap_or(get_env_var("COINBASE_INTX_API_SECRET")?);
-        let api_passphrase = api_passphrase.unwrap_or(get_env_var("COINBASE_INTX_API_PASSPHRASE")?);
+        let api_key = get_or_env_var(api_key, "COINBASE_INTX_API_KEY")?;
+        let api_secret = get_or_env_var(api_secret, "COINBASE_INTX_API_SECRET")?;
+        let api_passphrase = get_or_env_var(api_passphrase, "COINBASE_INTX_API_PASSPHRASE")?;
 
         let credential = Credential::new(api_key, api_secret, api_passphrase);
         let signal = Arc::new(AtomicBool::new(false));
@@ -137,17 +137,19 @@ impl CoinbaseIntxWebSocketClient {
         self.credential.api_key.as_str()
     }
 
+    /// Returns a masked version of the API key for logging purposes.
+    #[must_use]
+    pub fn api_key_masked(&self) -> String {
+        self.credential.api_key_masked()
+    }
+
     /// Returns a value indicating whether the client is active.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.inner
             .try_read()
             .ok()
-            .and_then(|guard| {
-                guard
-                    .as_ref()
-                    .map(nautilus_network::websocket::WebSocketClient::is_active)
-            })
+            .and_then(|guard| guard.as_ref().map(WebSocketClient::is_active))
             .unwrap_or(false)
     }
 
@@ -157,17 +159,14 @@ impl CoinbaseIntxWebSocketClient {
         self.inner
             .try_read()
             .ok()
-            .and_then(|guard| {
-                guard
-                    .as_ref()
-                    .map(nautilus_network::websocket::WebSocketClient::is_closed)
-            })
+            .and_then(|guard| guard.as_ref().map(WebSocketClient::is_closed))
             .unwrap_or(true)
     }
 
     /// Initialize the instruments cache with the given `instruments`.
-    pub fn initialize_instruments_cache(&mut self, instruments: Vec<InstrumentAny>) {
+    pub fn cache_instruments(&mut self, instruments: Vec<InstrumentAny>) {
         let mut instruments_cache: AHashMap<Ustr, InstrumentAny> = AHashMap::new();
+
         for inst in instruments {
             instruments_cache.insert(inst.symbol().inner(), inst.clone());
         }
@@ -200,6 +199,7 @@ impl CoinbaseIntxWebSocketClient {
         let client = self.clone();
         let post_reconnect = Arc::new(move || {
             let client = client.clone();
+
             tokio::spawn(async move { client.resubscribe_all().await });
         });
 
@@ -215,6 +215,7 @@ impl CoinbaseIntxWebSocketClient {
             reconnect_delay_max_ms: None,     // Use default
             reconnect_backoff_factor: None,   // Use default
             reconnect_jitter_ms: None,        // Use default
+            reconnect_max_attempts: None,
         };
         let (reader, client) =
             WebSocketClient::connect_stream(config, vec![], None, Some(post_reconnect)).await?;
@@ -352,8 +353,8 @@ impl CoinbaseIntxWebSocketClient {
             .map_err(|e| CoinbaseIntxWsError::JsonError(e.to_string()))?;
 
         if let Some(inner) = self.inner.read().await.as_ref() {
-            if let Err(err) = inner.send_text(json_txt, None).await {
-                tracing::error!("Error sending message: {err:?}");
+            if let Err(e) = inner.send_text(json_txt, None).await {
+                tracing::error!("Error sending message: {e:?}");
             }
         } else {
             return Err(CoinbaseIntxWsError::ClientError(
@@ -404,8 +405,8 @@ impl CoinbaseIntxWebSocketClient {
             .map_err(|e| CoinbaseIntxWsError::JsonError(e.to_string()))?;
 
         if let Some(inner) = self.inner.read().await.as_ref() {
-            if let Err(err) = inner.send_text(json_txt, None).await {
-                tracing::error!("Error sending message: {err:?}");
+            if let Err(e) = inner.send_text(json_txt, None).await {
+                tracing::error!("Error sending message: {e:?}");
             }
         } else {
             return Err(CoinbaseIntxWsError::ClientError(

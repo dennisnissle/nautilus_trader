@@ -13,6 +13,8 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Enumerations representing OKX WebSocket message metadata and codes.
+
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
@@ -78,6 +80,10 @@ pub enum OKXWsOperation {
     BatchAmendOrders,
     /// Mass cancel all orders for an instrument.
     MassCancel,
+    /// Place a new algo order.
+    OrderAlgo,
+    /// Cancel algo orders.
+    CancelAlgos,
 }
 
 #[derive(
@@ -151,16 +157,16 @@ pub enum OKXWsChannel {
     // Private Channels
     #[serde(rename = "account")]
     Account,
-    // #[display(fmt = "positions")]
-    // Positions,
+    #[serde(rename = "positions")]
+    Positions,
     // #[display(fmt = "balance_and_position")]
     // BalanceAndPosition,
     #[serde(rename = "orders")]
     Orders,
     #[serde(rename = "fills")]
     Fills,
-    // #[display(fmt = "orders-algo")]
-    // AlgoOrders,
+    #[serde(rename = "orders-algo")]
+    OrdersAlgo,
     // #[display(fmt = "algo-advance")]
     // AlgoAdvance,
     // #[display(fmt = "liquidation-warning")]
@@ -171,7 +177,7 @@ pub enum OKXWsChannel {
     // Rfqs,
     // #[serde(rename = "quotes")]
     // Quotes,
-    // #[display(fmt = "struc-block")]
+    // #[display(fmt = "structure-block-trades")]
     // StructuredBlock,
     // #[display(fmt = "spreads")]
     // Spreads,

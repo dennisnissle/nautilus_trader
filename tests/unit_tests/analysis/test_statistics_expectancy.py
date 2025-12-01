@@ -13,10 +13,12 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import math
+
 import pandas as pd
 from numpy import float64
 
-from nautilus_trader.analysis.statistics.expectancy import Expectancy
+from nautilus_trader.analysis import Expectancy
 
 
 class TestExpectancyPortfolioStatistic:
@@ -30,7 +32,7 @@ class TestExpectancyPortfolioStatistic:
         # Assert
         assert result == "Expectancy"
 
-    def test_calculate_given_empty_series_returns_zero(self):
+    def test_calculate_given_empty_series_returns_nan(self):
         # Arrange
         stat = Expectancy()
         data = pd.Series(dtype=float64)
@@ -39,7 +41,7 @@ class TestExpectancyPortfolioStatistic:
         result = stat.calculate_from_realized_pnls(data)
 
         # Assert
-        assert result == 0.0
+        assert math.isnan(result)
 
     def test_calculate_given_insufficient_data_returns_zero(self):
         # Arrange

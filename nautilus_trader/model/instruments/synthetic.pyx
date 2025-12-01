@@ -61,7 +61,7 @@ cdef class SyntheticInstrument(Data):
     Parameters
     ----------
     symbol : Symbol
-        The symbol for the synethic instrument.
+        The symbol for the synthetic instrument.
     price_precision : uint8_t
         The price precision for the synthetic instrument.
     components : list[InstrumentId]
@@ -146,6 +146,8 @@ cdef class SyntheticInstrument(Data):
     #     )
 
     def __eq__(self, SyntheticInstrument other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:

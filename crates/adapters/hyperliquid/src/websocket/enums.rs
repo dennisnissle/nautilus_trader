@@ -39,6 +39,12 @@ pub enum HyperliquidWsChannel {
     L2Book,
     #[serde(rename = "bbo")]
     Bbo,
+    #[serde(rename = "candle")]
+    Candle,
+    #[serde(rename = "allMids")]
+    AllMids,
+    #[serde(rename = "notification")]
+    Notification,
     #[serde(rename = "orderUpdates")]
     OrderUpdates,
     #[serde(rename = "userEvents")]
@@ -53,6 +59,8 @@ pub enum HyperliquidWsChannel {
     Post,
     #[serde(rename = "pong")]
     Pong,
+    #[serde(rename = "error")]
+    Error,
 }
 
 impl HyperliquidWsChannel {
@@ -63,6 +71,9 @@ impl HyperliquidWsChannel {
             Self::Trades => "trades",
             Self::L2Book => "l2Book",
             Self::Bbo => "bbo",
+            Self::Candle => "candle",
+            Self::AllMids => "allMids",
+            Self::Notification => "notification",
             Self::OrderUpdates => "orderUpdates",
             Self::UserEvents => "userEvents",
             Self::UserFills => "userFills",
@@ -70,6 +81,7 @@ impl HyperliquidWsChannel {
             Self::UserNonFundingLedgerUpdates => "userNonFundingLedgerUpdates",
             Self::Post => "post",
             Self::Pong => "pong",
+            Self::Error => "error",
         }
     }
 
@@ -77,7 +89,15 @@ impl HyperliquidWsChannel {
     pub fn is_public(&self) -> bool {
         matches!(
             self,
-            Self::SubscriptionResponse | Self::Trades | Self::L2Book | Self::Bbo | Self::Pong
+            Self::SubscriptionResponse
+                | Self::Trades
+                | Self::L2Book
+                | Self::Bbo
+                | Self::Candle
+                | Self::AllMids
+                | Self::Notification
+                | Self::Pong
+                | Self::Error
         )
     }
 
@@ -137,14 +157,14 @@ mod tests {
         assert_eq!(channel.as_str(), expected);
     }
 
-    #[test]
+    #[rstest]
     fn test_display_trait() {
         assert_eq!(format!("{}", HyperliquidWsChannel::Trades), "Trades");
         assert_eq!(format!("{}", HyperliquidWsChannel::L2Book), "L2Book");
         assert_eq!(format!("{}", HyperliquidWsChannel::UserFills), "UserFills");
     }
 
-    #[test]
+    #[rstest]
     fn test_is_public_channel() {
         assert!(HyperliquidWsChannel::Trades.is_public());
         assert!(HyperliquidWsChannel::L2Book.is_public());
@@ -160,7 +180,7 @@ mod tests {
         assert!(!HyperliquidWsChannel::Post.is_public());
     }
 
-    #[test]
+    #[rstest]
     fn test_is_private_channel() {
         assert!(!HyperliquidWsChannel::Trades.is_private());
         assert!(!HyperliquidWsChannel::L2Book.is_private());
@@ -174,18 +194,21 @@ mod tests {
         assert!(HyperliquidWsChannel::Post.is_private());
     }
 
-    #[test]
+    #[rstest]
     fn test_enum_iter() {
         use strum::IntoEnumIterator;
 
         let channels: Vec<HyperliquidWsChannel> = HyperliquidWsChannel::iter().collect();
-        assert_eq!(channels.len(), 11);
+        assert_eq!(channels.len(), 15);
         assert!(channels.contains(&HyperliquidWsChannel::Trades));
         assert!(channels.contains(&HyperliquidWsChannel::L2Book));
         assert!(channels.contains(&HyperliquidWsChannel::UserFills));
+        assert!(channels.contains(&HyperliquidWsChannel::Candle));
+        assert!(channels.contains(&HyperliquidWsChannel::AllMids));
+        assert!(channels.contains(&HyperliquidWsChannel::Notification));
     }
 
-    #[test]
+    #[rstest]
     fn test_from_str() {
         use std::str::FromStr;
 

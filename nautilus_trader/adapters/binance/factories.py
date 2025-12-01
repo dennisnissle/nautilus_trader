@@ -24,6 +24,7 @@ from nautilus_trader.adapters.binance.common.urls import get_http_base_url
 from nautilus_trader.adapters.binance.common.urls import get_ws_base_url
 from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
 from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
+from nautilus_trader.adapters.binance.config import BinanceInstrumentProviderConfig
 from nautilus_trader.adapters.binance.futures.data import BinanceFuturesDataClient
 from nautilus_trader.adapters.binance.futures.execution import BinanceFuturesExecutionClient
 from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesInstrumentProvider
@@ -51,6 +52,7 @@ def get_cached_binance_http_client(
     base_url: str | None = None,
     is_testnet: bool = False,
     is_us: bool = False,
+    proxy_url: str | None = None,
 ) -> BinanceHttpClient:
     """
     Cache and return a Binance HTTP client with the given key and secret.
@@ -75,6 +77,8 @@ def get_cached_binance_http_client(
         If the client is connecting to the testnet API.
     is_us : bool, default False
         If the client is connecting to Binance US.
+    proxy_url : str, optional
+        The proxy URL for HTTP requests.
 
     Returns
     -------
@@ -100,19 +104,28 @@ def get_cached_binance_http_client(
             raise ValueError(f"invalid `key_type`, was {key_type}")
 
     # Set up rate limit quotas
+    global_key = "binance:global"
+
     if account_type.is_spot:
         # Spot
-        ratelimiter_default_quota = Quota.rate_per_minute(6000)
+        global_quota = Quota.rate_per_minute(6000)
+        ratelimiter_default_quota = global_quota
         ratelimiter_quotas: list[tuple[str, Quota]] = [
-            ("order", Quota.rate_per_minute(3000)),
-            ("allOrders", Quota.rate_per_minute(int(3000 / 20))),
+            (global_key, global_quota),
+            ("binance:api/v3/order", Quota.rate_per_minute(3000)),
+            ("binance:api/v3/allOrders", Quota.rate_per_minute(int(3000 / 20))),
+            ("binance:api/v3/klines", Quota.rate_per_minute(600)),
         ]
     else:
         # Futures
-        ratelimiter_default_quota = Quota.rate_per_minute(2400)
+        global_quota = Quota.rate_per_minute(2400)
+        ratelimiter_default_quota = global_quota
         ratelimiter_quotas = [
-            ("order", Quota.rate_per_minute(1200)),
-            ("allOrders", Quota.rate_per_minute(int(1200 / 20))),
+            (global_key, global_quota),
+            ("binance:fapi/v1/order", Quota.rate_per_minute(1200)),
+            ("binance:fapi/v1/allOrders", Quota.rate_per_minute(int(1200 / 20))),
+            ("binance:fapi/v1/commissionRate", Quota.rate_per_minute(int(2400 / 20))),
+            ("binance:fapi/v1/klines", Quota.rate_per_minute(600)),
         ]
 
     return BinanceHttpClient(
@@ -125,6 +138,7 @@ def get_cached_binance_http_client(
         base_url=base_url or default_http_base_url,
         ratelimiter_quotas=ratelimiter_quotas,
         ratelimiter_default_quota=ratelimiter_default_quota,
+        proxy_url=proxy_url,
     )
 
 
@@ -177,7 +191,7 @@ def get_cached_binance_futures_instrument_provider(
     client: BinanceHttpClient,
     clock: LiveClock,
     account_type: BinanceAccountType,
-    config: InstrumentProviderConfig,
+    config: InstrumentProviderConfig | BinanceInstrumentProviderConfig,
     venue: Venue,
 ) -> BinanceFuturesInstrumentProvider:
     """
@@ -193,7 +207,7 @@ def get_cached_binance_futures_instrument_provider(
         The clock for the instrument provider.
     account_type : BinanceAccountType
         The Binance account type for the instrument provider.
-    config : InstrumentProviderConfig
+    config : InstrumentProviderConfig | BinanceInstrumentProviderConfig
         The configuration for the instrument provider.
     venue : Venue
         The venue for the instrument provider.
@@ -264,6 +278,7 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
             base_url=config.base_url_http,
             is_testnet=config.testnet,
             is_us=config.us,
+            proxy_url=config.proxy_url,
         )
 
         default_base_url_ws: str = get_ws_base_url(
@@ -372,6 +387,7 @@ class BinanceLiveExecClientFactory(LiveExecClientFactory):
             base_url=config.base_url_http,
             is_testnet=config.testnet,
             is_us=config.us,
+            proxy_url=config.proxy_url,
         )
 
         default_base_url_ws: str = get_ws_base_url(

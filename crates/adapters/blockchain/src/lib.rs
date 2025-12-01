@@ -37,6 +37,7 @@
 //! - `hypersync`: Enables the [HyperSync](https://envio.dev/#hypersync) client integration.
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
 //! - `extension-module`: Builds as a Python extension module (used with `python`).
+//! - `turmoil`: Enables deterministic network simulation testing with [turmoil](https://github.com/tokio-rs/turmoil).
 
 #![warn(rustc::all)]
 #![deny(unsafe_code)]
@@ -47,6 +48,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod config;
+pub mod constants;
 pub mod contracts;
 pub mod decode;
 pub mod events;
@@ -55,6 +57,9 @@ pub mod rpc;
 
 #[cfg(feature = "hypersync")]
 pub mod cache;
+
+#[cfg(feature = "hypersync")]
+pub mod execution;
 
 #[cfg(feature = "hypersync")]
 pub mod data;
@@ -67,9 +72,6 @@ pub mod factories;
 
 #[cfg(feature = "hypersync")]
 pub mod hypersync;
-
-#[cfg(feature = "hypersync")]
-pub mod reporting;
 
 #[cfg(feature = "python")]
 pub mod python;

@@ -13,9 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! API credential utilities for signing BitMEX requests.
+
+#![allow(unused_assignments)] // Fields are accessed externally, false positive from nightly
+
 use std::fmt::Debug;
 
 use aws_lc_rs::hmac;
+use nautilus_core::string::mask_api_key;
 use ustr::Ustr;
 use zeroize::ZeroizeOnDrop;
 
@@ -32,7 +37,7 @@ pub struct Credential {
 
 impl Debug for Credential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credential")
+        f.debug_struct(stringify!(Credential))
             .field("api_key", &self.api_key)
             .field("api_secret", &"<redacted>")
             .finish()
@@ -59,6 +64,15 @@ impl Credential {
         let signature = hmac::sign(&key, sign_message.as_bytes());
         hex::encode(signature.as_ref())
     }
+
+    /// Returns a masked version of the API key for logging purposes.
+    ///
+    /// Shows first 4 and last 4 characters with ellipsis in between.
+    /// For keys shorter than 8 characters, shows asterisks only.
+    #[must_use]
+    pub fn api_key_masked(&self) -> String {
+        mask_api_key(self.api_key.as_str())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -71,6 +85,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::common::testing::load_test_json;
 
     const API_KEY: &str = "LAqUlngMIQkIUjXMUreyu3qn";
     const API_SECRET: &str = "chNOOS4KvNXR_Xq4k4c9qsfoKWvnDecLATCRlcBwyKDYnWgO";
@@ -108,9 +123,9 @@ mod tests {
     fn test_post_with_data() {
         let credential = Credential::new(API_KEY.to_string(), API_SECRET.to_string());
 
-        let data = r#"{"symbol":"XBTM15","price":219.0,"clOrdID":"mm_bitmex_1a/oemUeQ4CAJZgP3fjHsA","orderQty":98}"#;
+        let data = load_test_json("credential_post_order.json");
 
-        let signature = credential.sign("POST", "/api/v1/order", 1518064238, data);
+        let signature = credential.sign("POST", "/api/v1/order", 1518064238, data.trim_end());
 
         assert_eq!(
             signature,

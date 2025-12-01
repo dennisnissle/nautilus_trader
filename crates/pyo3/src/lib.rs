@@ -50,9 +50,18 @@
 #![deny(clippy::missing_panics_doc)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
-use pyo3::prelude::*;
+use nautilus_common::live::runtime::shutdown_runtime;
+use pyo3::{prelude::*, pyfunction};
+
+const RUNTIME_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
+
+#[pyfunction]
+fn _shutdown_nautilus_runtime() -> PyResult<()> {
+    shutdown_runtime(Duration::from_secs(RUNTIME_SHUTDOWN_TIMEOUT_SECS));
+    Ok(())
+}
 
 /// We modify sys modules so that submodule can be loaded directly as
 /// import supermodule.submodule
@@ -64,7 +73,7 @@ use pyo3::prelude::*;
 fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sys = PyModule::import(py, "sys")?;
     let modules = sys.getattr("modules")?;
-    let sys_modules: &Bound<'_, PyAny> = modules.downcast()?;
+    let sys_modules: &Bound<'_, PyAny> = modules.cast()?;
 
     #[cfg(feature = "cython-compat")]
     let module_name = "nautilus_trader.core.nautilus_pyo3";
@@ -74,6 +83,14 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Set pyo3_nautilus to be recognized as a subpackage
     sys_modules.set_item(module_name, m)?;
+
+    // nautilus-import-ok: wrap_pymodule! requires fully qualified paths
+    let n = "analysis";
+    let submodule = pyo3::wrap_pymodule!(nautilus_analysis::python::analysis);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
 
     let n = "core";
     let submodule = pyo3::wrap_pymodule!(nautilus_core::python::core);
@@ -159,10 +176,19 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cython-compat")]
     re_export_module_attributes(m, n)?;
 
+    ////////////////////////////////////////////////////////////////////////////////
     // Adapters
+    ////////////////////////////////////////////////////////////////////////////////
 
     let n = "bitmex";
     let submodule = pyo3::wrap_pymodule!(nautilus_bitmex::python::bitmex);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
+    let n = "bybit";
+    let submodule = pyo3::wrap_pymodule!(nautilus_bybit::python::bybit);
     m.add_wrapped(submodule)?;
     sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
     #[cfg(feature = "cython-compat")]
@@ -182,8 +208,22 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cython-compat")]
     re_export_module_attributes(m, n)?;
 
+    let n = "dydx";
+    let submodule = pyo3::wrap_pymodule!(nautilus_dydx::python::dydx);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
     let n = "hyperliquid";
     let submodule = pyo3::wrap_pymodule!(nautilus_hyperliquid::python::hyperliquid);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
+    let n = "kraken";
+    let submodule = pyo3::wrap_pymodule!(nautilus_kraken::python::kraken);
     m.add_wrapped(submodule)?;
     sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
     #[cfg(feature = "cython-compat")]
@@ -205,6 +245,7 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     #[cfg(feature = "defi")]
     {
+        // nautilus-import-ok: wrap_pymodule! requires fully qualified paths
         let n = "blockchain";
         let submodule = pyo3::wrap_pymodule!(nautilus_blockchain::python::blockchain);
         m.add_wrapped(submodule)?;
@@ -212,6 +253,13 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         #[cfg(feature = "cython-compat")]
         re_export_module_attributes(m, n)?;
     }
+
+    // Register a lightweight shutdown hook so the interpreter waits for the Tokio
+    // runtime to yield once before `Py_Finalize` tears it down.
+    m.add_function(pyo3::wrap_pyfunction!(_shutdown_nautilus_runtime, m)?)?;
+    let shutdown_callable = m.getattr("_shutdown_nautilus_runtime")?;
+    let atexit = PyModule::import(py, "atexit")?;
+    atexit.call_method1("register", (shutdown_callable,))?;
 
     Ok(())
 }

@@ -18,7 +18,7 @@ Throughout the documentation, the term *"Nautilus system boundary"* refers to op
 the runtime of a single Nautilus node (also known as a "trader instance").
 :::
 
-## Design Philosophy
+## Design philosophy
 
 The major architectural techniques and design patterns employed by NautilusTrader are:
 
@@ -26,11 +26,11 @@ The major architectural techniques and design patterns employed by NautilusTrade
 - [Event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_programming)
 - [Messaging patterns](https://en.wikipedia.org/wiki/Messaging_pattern) (Pub/Sub, Req/Rep, point-to-point)
 - [Ports and adapters](https://en.wikipedia.org/wiki/Hexagonal_architecture_(software))
-- [Crash-only design](https://en.wikipedia.org/wiki/Crash-only_software)
+- [Crash-only design](#crash-only-design)
 
 These techniques have been utilized to assist in achieving certain architectural quality attributes.
 
-### Quality Attributes
+### Quality attributes
 
 Architectural decisions are often a trade-off between competing priorities. The
 below is a list of some of the most important quality attributes which are considered
@@ -43,7 +43,124 @@ when making design and architectural decisions, roughly in order of 'weighting'.
 - Maintainability
 - Deployability
 
-## System Architecture
+### Assurance-driven engineering
+
+NautilusTrader is incrementally adopting a high-assurance mindset: critical code
+paths should carry executable invariants that verify behaviour matches the
+business requirements. Practically this means we:
+
+- Identify the components whose failure has the highest blast radius (core
+  domain types, risk and execution flows) and write down their invariants in
+  plain language.
+- Codify those invariants as executable checks (unit tests, property tests,
+  fuzzers, static assertions) that run in CI, keeping the feedback loop light.
+- Prefer zero-cost safety techniques built into Rust (ownership, `Result`
+  surfaces, `panic = abort`) and add targeted formal tools only where they pay
+  for themselves.
+- Track “assurance debt” alongside feature work so new integrations extend the
+  safety net rather than bypass it.
+
+This approach preserves the platform’s delivery cadence while giving mission
+critical flows the additional scrutiny they need.
+
+Further reading: [High Assurance Rust](https://highassurance.rs/).
+
+### Crash-only design
+
+NautilusTrader embraces [crash-only design](https://en.wikipedia.org/wiki/Crash-only_software),
+a philosophy where *"the only way to stop the system is to crash it"*, and *"the only way to bring it
+up is to recover from a crash"*. This approach simplifies state management and improves reliability
+by eliminating the complexity of graceful shutdown code paths that are rarely tested.
+
+Key principles:
+
+- **Single code path** - Recovery from crash is the primary (and only) initialization path, ensuring it is well-tested.
+- **No graceful shutdown** - The system does not attempt complex cleanup procedures that may fail or hang.
+- **Externalized state** - Critical state is persisted externally (database, message bus) so crashes do not lose data.
+- **Fast restart** - The system is designed to restart quickly after a crash, minimizing downtime.
+- **Idempotent operations** - Operations are designed to be safely retried after restart.
+
+This design complements the [fail-fast policy](#data-integrity-and-fail-fast-policy), where
+unrecoverable errors (data corruption, invariant violations) result in immediate process termination
+rather than attempting to continue in a compromised state.
+
+**References:**
+
+- [Crash-Only Software](https://www.usenix.org/conference/hotos-ix/crash-only-software) - Candea & Fox, HotOS 2003 (original research paper)
+- [Microreboot—A Technique for Cheap Recovery](https://www.usenix.org/conference/osdi-04/microreboot—-technique-cheap-recovery) - Candea et al., OSDI 2004
+- [The properties of crash-only software](https://brooker.co.za/blog/2012/01/22/crash-only.html) - Marc Brooker's blog
+- [Crash-only software: More than meets the eye](https://lwn.net/Articles/191059/) - LWN.net article
+- [Recovery-Oriented Computing (ROC) Project](http://roc.cs.berkeley.edu/) - UC Berkeley/Stanford research
+
+### Data integrity and fail-fast policy
+
+NautilusTrader prioritizes data integrity over availability for trading operations. The system employs
+a strict fail-fast policy for arithmetic operations and data handling to prevent silent data corruption
+that could lead to incorrect trading decisions.
+
+#### Fail-fast principles
+
+The system will fail fast (panic or return an error) when encountering:
+
+- Arithmetic overflow or underflow in operations on timestamps, prices, or quantities that exceed valid ranges.
+- Invalid data during deserialization including NaN, Infinity, or out-of-range values in market data or configuration.
+- Type conversion failures such as negative values where only positive values are valid (timestamps, quantities).
+- Malformed input parsing for prices, timestamps, or precision values.
+
+Rationale:
+
+In trading systems, corrupt data is worse than no data. A single incorrect price, timestamp, or quantity
+can cascade through the system, resulting in:
+
+- Incorrect position sizing or risk calculations.
+- Orders placed at wrong prices.
+- Backtests producing misleading results.
+- Silent financial losses.
+
+By crashing immediately on invalid data, NautilusTrader ensures:
+
+1. **No silent corruption** - Invalid data never propagates through the system.
+2. **Immediate feedback** - Issues are discovered during development and testing, not in production.
+3. **Audit trail** - Crash logs clearly identify the source of invalid data.
+4. **Deterministic behavior** - The same invalid input always produces the same failure.
+
+#### When fail-fast applies
+
+Panics are used for:
+
+- Programmer errors (logic bugs, incorrect API usage).
+- Data that violates fundamental invariants (negative timestamps, NaN prices).
+- Arithmetic that would silently produce incorrect results.
+
+Results or Options are used for:
+
+- Expected runtime failures (network errors, file I/O).
+- Business logic validation (order constraints, risk limits).
+- User input validation.
+- Library APIs exposed to downstream crates where callers need explicit error handling without relying on panics for control flow.
+
+#### Example scenarios
+
+```rust
+// CORRECT: Panics on overflow - prevents data corruption
+let total_ns = timestamp1 + timestamp2; // Panics if result > u64::MAX
+
+// CORRECT: Rejects NaN during deserialization
+let price = serde_json::from_str("NaN"); // Error: "must be finite"
+
+// CORRECT: Explicit overflow handling when needed
+let total_ns = timestamp1.checked_add(timestamp2)?; // Returns Option<UnixNanos>
+```
+
+This policy is implemented throughout the core types (`UnixNanos`, `Price`, `Quantity`, etc.)
+and ensures that NautilusTrader maintains the highest standards of data correctness for production trading.
+
+In production deployments, the system is typically configured with `panic = abort` in release builds,
+ensuring that any panic results in a clean process termination that can be handled by process supervisors
+or orchestration systems. This aligns with the [crash-only design](#crash-only-design) principle, where unrecoverable errors
+lead to immediate restart rather than attempting to continue in a potentially corrupted state.
+
+## System architecture
 
 The NautilusTrader codebase is actually both a framework for composing trading
  systems, and a set of default system implementations which can operate in various
@@ -51,11 +168,11 @@ The NautilusTrader codebase is actually both a framework for composing trading
 
 ![Architecture](https://github.com/nautechsystems/nautilus_trader/blob/develop/assets/architecture-overview.png?raw=true "architecture")
 
-### Core Components
+### Core components
 
 The platform is built around several key components that work together to provide a comprehensive trading system:
 
-#### NautilusKernel
+#### `NautilusKernel`
 
 The central orchestration component responsible for:
 
@@ -65,7 +182,7 @@ The central orchestration component responsible for:
 - Coordinating shared resources and lifecycle management.
 - Providing a unified entry point for system operations.
 
-#### MessageBus
+#### `MessageBus`
 
 The backbone of inter-component communication, implementing:
 
@@ -74,16 +191,16 @@ The backbone of inter-component communication, implementing:
 - **Command/Event messaging**: For triggering actions and notifying state changes.
 - **Optional state persistence**: Using Redis for durability and restart capabilities.
 
-#### Cache
+#### `Cache`
 
 High-performance in-memory storage system that:
 
 - Stores instruments, accounts, orders, positions, and more.
 - Provides performant fetching capabilities for trading components.
-- Maintains consist state across the system.
+- Maintains consistent state across the system.
 - Supports both read and write operations with optimized access patterns.
 
-#### DataEngine
+#### `DataEngine`
 
 Processes and routes market data throughout the system:
 
@@ -91,7 +208,7 @@ Processes and routes market data throughout the system:
 - Routes data to appropriate consumers based on subscriptions.
 - Manages data flow from external sources to internal components.
 
-#### ExecutionEngine
+#### `ExecutionEngine`
 
 Manages order lifecycle and execution:
 
@@ -101,7 +218,7 @@ Manages order lifecycle and execution:
 - Handles execution reports and fills from venues.
 - Handles reconciliation of external execution state.
 
-#### RiskEngine
+#### `RiskEngine`
 
 Provides comprehensive risk management:
 
@@ -110,7 +227,7 @@ Provides comprehensive risk management:
 - Real-time risk calculations.
 - Configurable risk rules and limits.
 
-### Environment Contexts
+### Environment contexts
 
 An environment context in NautilusTrader defines the type of data and trading venue you are working
 with. Understanding these contexts is crucial for effective backtesting, development, and live trading.
@@ -121,7 +238,7 @@ Here are the available environments you can work with:
 - `Sandbox`: Real-time data with simulated venues.
 - `Live`: Real-time data with live venues (paper trading or real accounts).
 
-### Common Core
+### Common core
 
 The platform has been designed to share as much common code between backtest, sandbox and live trading systems as possible.
 This is formalized in the `system` subpackage, where you will find the `NautilusKernel` class,
@@ -130,11 +247,11 @@ providing a common core system 'kernel'.
 The *ports and adapters* architectural style enables modular components to be integrated into the
 core system, providing various hooks for user-defined or custom component implementations.
 
-### Data and Execution Flow Patterns
+### Data and execution flow patterns
 
 Understanding how data and execution flow through the system is crucial for effective use of the platform:
 
-#### Data Flow Pattern
+#### Data flow pattern
 
 1. **External Data Ingestion**: Market data enters via venue-specific `DataClient` adapters where it is normalized.
 2. **Data Processing**: The `DataEngine` handles data processing for internal components.
@@ -142,7 +259,7 @@ Understanding how data and execution flow through the system is crucial for effe
 4. **Event Publishing**: Data events are published to the `MessageBus`.
 5. **Consumer Delivery**: Subscribed components (Actors, Strategies) receive relevant data events.
 
-#### Execution Flow Pattern
+#### Execution flow pattern
 
 1. **Command Generation**: User strategies create trading commands.
 2. **Command Publishing**: Commands are sent through the `MessageBus`.
@@ -152,17 +269,31 @@ Understanding how data and execution flow through the system is crucial for effe
 6. **Event Flow Back**: Order events (fills, cancellations) flow back through the system.
 7. **State Updates**: Portfolio and position states are updated based on execution events.
 
-#### Component State Management
+#### Component state management
 
-All components follow a finite state machine pattern with well-defined states:
+All components follow a finite state machine pattern. The `ComponentState` enum defines both stable states and transitional states:
 
-- **PRE_INITIALIZED**: Component is created but not yet wired up to the system.
-- **READY**: Component is configured and wired up, but not yet running.
-- **RUNNING**: Component is actively processing messages and performing operations.
-- **STOPPED**: Component has been gracefully stopped and is no longer processing.
-- **DEGRADED**: Component is running but with reduced functionality due to errors.
-- **FAULTED**: Component has encountered a critical error and cannot continue.
-- **DISPOSED**: Component has been cleaned up and resources have been released.
+**Stable states:**
+
+- **PRE_INITIALIZED**: Component is instantiated but not yet ready to fulfill its specification.
+- **READY**: Component is configured and able to be started.
+- **RUNNING**: Component is operating normally and can fulfill its specification.
+- **STOPPED**: Component has successfully stopped.
+- **DEGRADED**: Component has degraded and may not meet its full specification.
+- **FAULTED**: Component has shut down due to a detected fault.
+- **DISPOSED**: Component has shut down and released all of its resources.
+
+**Transitional states:**
+
+- **STARTING**: Component is executing its actions on `start`.
+- **STOPPING**: Component is executing its actions on `stop`.
+- **RESUMING**: Component is being started again after its initial start.
+- **RESETTING**: Component is executing its actions on `reset`.
+- **DISPOSING**: Component is executing its actions on `dispose`.
+- **DEGRADING**: Component is executing its actions on `degrade`.
+- **FAULTING**: Component is executing its actions on `fault`.
+
+Transitional states are brief intermediate states that occur during state transitions. Components should not remain in transitional states for extended periods.
 
 ### Messaging
 
@@ -217,7 +348,7 @@ for each of these subpackages from the left nav menu.
 
 ## Code structure
 
-The foundation of the codebase is the `crates` directory, containing a collection of core Rust crates including a C foreign function interface (FFI) generated by `cbindgen`.
+The foundation of the codebase is the `crates` directory, containing a collection of Rust crates including a C foreign function interface (FFI) generated by `cbindgen`.
 
 The bulk of the production code resides in the `nautilus_trader` directory, which contains a collection of Python/Cython subpackages and modules.
 
@@ -283,13 +414,21 @@ Every attempt has been made to accurately document the possible exceptions which
 can be raised from NautilusTrader code, and the conditions which will trigger them.
 
 :::warning
-There may be other undocumented exceptions which can be raised by Pythons standard
+There may be other undocumented exceptions which can be raised by Python's standard
 library, or from third party library dependencies.
 :::
 
 ### Processes and threads
 
-:::tip
-For optimal performance and to prevent potential issues related to Python's memory
-model and equality, it is highly recommended to run each trader instance in a separate process.
+:::warning **One node per process**
+Running multiple `TradingNode` or `BacktestNode` instances **concurrently** in the same process is not supported due to global singleton state:
+
+- **Backtest force-stop flag** - The `_FORCE_STOP` global flag is shared across all engines in the process.
+- **Logger mode and timestamps** - The logging subsystem uses global state; backtests flip between static and real-time modes.
+- **Runtime singletons** - Global Tokio runtime, callback registries, and other `OnceLock` instances are process-wide.
+
+**Sequential execution** of multiple nodes (one after another with proper disposal between runs) is fully supported and used in the test suite.
+
+For production deployments, add multiple strategies to a **single TradingNode** within a process.
+For parallel execution or workload isolation, run each node in its own separate process.
 :::

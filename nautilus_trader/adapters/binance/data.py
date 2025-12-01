@@ -80,6 +80,7 @@ from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.data import bar_aggregation_not_implemented_message
 from nautilus_trader.model.enums import AggregationSource
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import BarAggregation
@@ -287,13 +288,7 @@ class BinanceCommonDataClient(LiveMarketDataClient):
         await self._ws_client.disconnect()
 
     def _should_retry(self, error_code: BinanceErrorCode, retries: int) -> bool:
-        if (
-            error_code not in self._retry_errors
-            or not self._max_retries
-            or retries > self._max_retries
-        ):
-            return False
-        return True
+        return not (error_code not in self._retry_errors or not self._max_retries or retries > self._max_retries)
 
     # -- SUBSCRIPTIONS ----------------------------------------------------------------------------
 
@@ -665,10 +660,6 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                 limit=request.limit if request.limit > 0 else None,
             )
 
-        # Binance always returns the *last* bar as an unfinished / partial bar
-        # which we publish separately from the historical series.  When the
-        # query returned no data we avoid raising ``IndexError`` by checking
-        # for an empty collection first.
         if not bars:
             self._log.warning(
                 f"No bars returned for {request.bar_type} between "
@@ -676,11 +667,20 @@ class BinanceCommonDataClient(LiveMarketDataClient):
             )
             return
 
-        partial: Bar = bars.pop()
+        # Filter out incomplete bars where close_time >= current_time
+        # Binance may return the current forming bar which should be excluded from historical data
+        current_time_ns = self._clock.timestamp_ns()
+        complete_bars = [bar for bar in bars if bar.ts_event < current_time_ns]
+
+        if not complete_bars:
+            self._log.warning(
+                f"No complete bars available for {request.bar_type} (all bars were incomplete)",
+            )
+            return
+
         self._handle_bars(
             request.bar_type,
-            bars,
-            partial,
+            complete_bars,
             request.id,
             request.start,
             request.end,
@@ -765,11 +765,8 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                 handler=bars.append,
             )
         else:
-            raise RuntimeError(  # pragma: no cover (design-time error)
-                f"Cannot start aggregator: "  # pragma: no cover (design-time error)
-                f"BarAggregation.{bar_type.spec.aggregation_string_c()} "  # pragma: no cover (design-time error)
-                f"not supported in open-source",  # pragma: no cover (design-time error)
-            )
+            msg = bar_aggregation_not_implemented_message(bar_type.spec.aggregation)
+            raise NotImplementedError(f"Inferring bars from Binance klines failed: {msg}")
 
         for binance_bar in binance_bars:
             if binance_bar.count == 0:
@@ -899,10 +896,9 @@ class BinanceCommonDataClient(LiveMarketDataClient):
                 handler=bars.append,
             )
         else:
-            raise RuntimeError(  # pragma: no cover (design-time error)
-                f"Cannot start aggregator: "  # pragma: no cover (design-time error)
-                f"BarAggregation.{bar_type.spec.aggregation_string_c()} "  # pragma: no cover (design-time error)
-                f"not supported in open-source",  # pragma: no cover (design-time error)
+            msg = bar_aggregation_not_implemented_message(bar_type.spec.aggregation)
+            raise NotImplementedError(
+                f"Inferring bars from Binance aggregated trades failed: {msg}",
             )
 
         for tick in ticks:

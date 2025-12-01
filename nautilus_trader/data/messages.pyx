@@ -20,8 +20,8 @@ from cpython.datetime cimport datetime
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.data cimport Data
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport DataType
@@ -76,9 +76,10 @@ cdef class DataCommand(Command):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         Condition.is_true(client_id or venue, "Both `client_id` and `venue` were None")
-        super().__init__(command_id, ts_init)
+        super().__init__(command_id, ts_init, correlation_id)
 
         self.data_type = data_type
         self.client_id = client_id
@@ -99,7 +100,8 @@ cdef class DataCommand(Command):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"data_type={self.data_type}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -140,6 +142,7 @@ cdef class SubscribeData(DataCommand):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         if instrument_id is not None:
             # for a unique type in such usage: self._add_subscription(command.data_type)
@@ -154,6 +157,7 @@ cdef class SubscribeData(DataCommand):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
         self.instrument_id = instrument_id
 
@@ -161,7 +165,7 @@ cdef class SubscribeData(DataCommand):
         self,
         datetime start: datetime | None,
         datetime end: datetime | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
     ) -> RequestData:
         """
         Convert this subscribe message to a request message.
@@ -193,9 +197,10 @@ cdef class SubscribeData(DataCommand):
             client_id=self.client_id,
             venue=self.venue,
             callback=callback,
-            request_id=self.id,
+            request_id=UUID4(),
             ts_init=self.ts_init,
             params=params,
+            correlation_id=self.id,
         )
 
 
@@ -230,6 +235,7 @@ cdef class SubscribeInstruments(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -239,6 +245,7 @@ cdef class SubscribeInstruments(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -253,14 +260,15 @@ cdef class SubscribeInstruments(SubscribeData):
             f"{type(self).__name__}("
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
     def to_request(
         self,
         datetime start: datetime | None,
         datetime end: datetime | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
     ) -> RequestInstruments:
         """
         Convert this subscribe message to a request message.
@@ -289,9 +297,10 @@ cdef class SubscribeInstruments(SubscribeData):
             client_id=self.client_id,
             venue=self.venue,
             callback=callback,
-            request_id=self.id,
+            request_id=UUID4(),
             ts_init=self.ts_init,
             params=params,
+            correlation_id=self.id,
         )
 
 
@@ -329,6 +338,7 @@ cdef class SubscribeInstrument(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -338,6 +348,7 @@ cdef class SubscribeInstrument(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -354,7 +365,8 @@ cdef class SubscribeInstrument(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -408,6 +420,7 @@ cdef class SubscribeOrderBook(SubscribeData):
         bint managed = True,
         int interval_ms = 0,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         Condition.is_true(
             book_data_type in (OrderBookDelta, OrderBookDepth10),
@@ -422,6 +435,7 @@ cdef class SubscribeOrderBook(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
         self.book_type = book_type
         self.depth = depth
@@ -452,7 +466,56 @@ cdef class SubscribeOrderBook(SubscribeData):
             f"interval_ms={self.interval_ms}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+    def to_request(
+        self,
+        datetime start: datetime | None,
+        datetime end: datetime | None,
+        callback: Callable[[Any], None] | None,
+    ) -> RequestOrderBookDepth:
+        """
+        Convert this subscribe message to a request message.
+
+        Parameters
+        ----------
+        start : datetime
+            The start datetime (UTC) of request time range (inclusive).
+        end : datetime
+            The end datetime (UTC) of request time range.
+            The inclusiveness depends on individual data client implementation.
+        callback : Callable[[Any], None]
+            The delegate to call with the data.
+
+        Returns
+        -------
+        RequestOrderBookDepth
+            The converted request message.
+        """
+        if self.data_type.type != OrderBookDepth10:
+            raise ValueError(
+                f"Cannot convert SubscribeOrderBook with data_type {self.data_type.type} to RequestOrderBookDepth. "
+                f"Only OrderBookDepth10 subscriptions can be converted to historical requests."
+            )
+
+        params = self.params.copy() if self.params else {}
+        params["subscription_name"] = f"{self.data_type.type.__name__}.{self.instrument_id}"
+
+        return RequestOrderBookDepth(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=0,
+            depth=self.depth if self.depth > 0 else 10,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=callback,
+            request_id=UUID4(),
+            ts_init=self.ts_init,
+            params=params,
+            correlation_id=self.id,
         )
 
 
@@ -490,6 +553,7 @@ cdef class SubscribeQuoteTicks(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(QuoteTick),
@@ -499,6 +563,7 @@ cdef class SubscribeQuoteTicks(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -515,14 +580,15 @@ cdef class SubscribeQuoteTicks(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
     def to_request(
         self,
         datetime start: datetime | None,
         datetime end: datetime | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
     ) -> RequestQuoteTicks:
         """
         Convert this subscribe message to a request message.
@@ -553,9 +619,10 @@ cdef class SubscribeQuoteTicks(SubscribeData):
             client_id=self.client_id,
             venue=self.venue,
             callback=callback,
-            request_id=self.id,
+            request_id=UUID4(),
             ts_init=self.ts_init,
             params=params,
+            correlation_id=self.id,
         )
 
 
@@ -593,15 +660,17 @@ cdef class SubscribeTradeTicks(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(MarkPriceUpdate),
+            DataType(TradeTick),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -618,14 +687,15 @@ cdef class SubscribeTradeTicks(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
     def to_request(
         self,
         datetime start: datetime | None,
         datetime end: datetime | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
     ) -> RequestTradeTicks:
         """
         Convert this subscribe message to a request message.
@@ -656,9 +726,10 @@ cdef class SubscribeTradeTicks(SubscribeData):
             client_id=self.client_id,
             venue=self.venue,
             callback=callback,
-            request_id=self.id,
+            request_id=UUID4(),
             ts_init=self.ts_init,
             params=params,
+            correlation_id=self.id,
         )
 
 
@@ -696,15 +767,17 @@ cdef class SubscribeMarkPrices(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(IndexPriceUpdate),
+            DataType(MarkPriceUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -721,7 +794,8 @@ cdef class SubscribeMarkPrices(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -759,15 +833,17 @@ cdef class SubscribeIndexPrices(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(FundingRateUpdate),
+            DataType(IndexPriceUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -784,7 +860,8 @@ cdef class SubscribeIndexPrices(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -822,15 +899,17 @@ cdef class SubscribeFundingRates(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(MarkPriceUpdate),
+            DataType(FundingRateUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -847,7 +926,8 @@ cdef class SubscribeFundingRates(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -867,8 +947,6 @@ cdef class SubscribeBars(SubscribeData):
         The command ID.
     ts_init : uint64_t
         UNIX timestamp (nanoseconds) when the object was initialized.
-    await_partial : bool
-        If the bar aggregator should await the arrival of a historical partial bar prior to actively aggregating new bars.
     params : dict[str, object], optional
         Additional parameters for the subscription.
 
@@ -886,8 +964,8 @@ cdef class SubscribeBars(SubscribeData):
         Venue venue: Venue | None,
         UUID4 command_id not None,
         uint64_t ts_init,
-        bint await_partial = False,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Bar),
@@ -897,15 +975,14 @@ cdef class SubscribeBars(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
         self.bar_type = bar_type
-        self.await_partial = await_partial
 
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
             f"bar_type={self.bar_type}, "
-            f"await_partial={self.await_partial}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue})"
         )
@@ -914,17 +991,17 @@ cdef class SubscribeBars(SubscribeData):
         return (
             f"{type(self).__name__}("
             f"bar_type={self.bar_type}, "
-            f"await_partial={self.await_partial}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
     def to_request(
         self,
         datetime start: datetime | None,
         datetime end: datetime | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
     ) -> RequestBars:
         """
         Convert this subscribe message to a request message.
@@ -955,9 +1032,10 @@ cdef class SubscribeBars(SubscribeData):
             client_id=self.client_id,
             venue=self.venue,
             callback=callback,
-            request_id=self.id,
+            request_id=UUID4(),
             ts_init=self.ts_init,
             params=params,
+            correlation_id=self.id,
         )
 
 
@@ -995,6 +1073,7 @@ cdef class SubscribeInstrumentStatus(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(InstrumentStatus),
@@ -1004,6 +1083,7 @@ cdef class SubscribeInstrumentStatus(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1020,7 +1100,8 @@ cdef class SubscribeInstrumentStatus(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1058,6 +1139,7 @@ cdef class SubscribeInstrumentClose(SubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(InstrumentClose),
@@ -1067,6 +1149,7 @@ cdef class SubscribeInstrumentClose(SubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1083,7 +1166,8 @@ cdef class SubscribeInstrumentClose(SubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1124,6 +1208,7 @@ cdef class UnsubscribeData(DataCommand):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         if instrument_id is not None:
             # for a unique type in such usage: self._add_subscription(command.data_type)
@@ -1138,6 +1223,7 @@ cdef class UnsubscribeData(DataCommand):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
         self.instrument_id = instrument_id
 
@@ -1173,6 +1259,7 @@ cdef class UnsubscribeInstruments(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -1182,6 +1269,7 @@ cdef class UnsubscribeInstruments(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1196,7 +1284,8 @@ cdef class UnsubscribeInstruments(UnsubscribeData):
             f"{type(self).__name__}("
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1234,6 +1323,7 @@ cdef class UnsubscribeInstrument(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -1243,6 +1333,7 @@ cdef class UnsubscribeInstrument(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1259,7 +1350,8 @@ cdef class UnsubscribeInstrument(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1300,6 +1392,7 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         Condition.is_true(
             book_data_type in (OrderBookDelta, OrderBookDepth10),
@@ -1313,6 +1406,7 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1331,7 +1425,8 @@ cdef class UnsubscribeOrderBook(UnsubscribeData):
             f"data_type={self.data_type}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1369,6 +1464,7 @@ cdef class UnsubscribeQuoteTicks(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(QuoteTick),
@@ -1378,6 +1474,7 @@ cdef class UnsubscribeQuoteTicks(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1394,7 +1491,8 @@ cdef class UnsubscribeQuoteTicks(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1432,15 +1530,17 @@ cdef class UnsubscribeTradeTicks(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(IndexPriceUpdate),
+            DataType(TradeTick),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1457,7 +1557,8 @@ cdef class UnsubscribeTradeTicks(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1495,15 +1596,17 @@ cdef class UnsubscribeMarkPrices(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(FundingRateUpdate),
+            DataType(MarkPriceUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1520,7 +1623,8 @@ cdef class UnsubscribeMarkPrices(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1558,15 +1662,17 @@ cdef class UnsubscribeIndexPrices(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(IndexPriceUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1583,7 +1689,8 @@ cdef class UnsubscribeIndexPrices(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1621,15 +1728,17 @@ cdef class UnsubscribeFundingRates(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
-            DataType(TradeTick),
+            DataType(FundingRateUpdate),
             instrument_id,
             client_id,
             venue,
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1646,7 +1755,8 @@ cdef class UnsubscribeFundingRates(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1684,6 +1794,7 @@ cdef class UnsubscribeBars(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Bar),
@@ -1693,6 +1804,7 @@ cdef class UnsubscribeBars(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
         self.bar_type = bar_type
 
@@ -1710,7 +1822,8 @@ cdef class UnsubscribeBars(UnsubscribeData):
             f"bar_type={self.bar_type}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1748,6 +1861,7 @@ cdef class UnsubscribeInstrumentStatus(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(InstrumentStatus),
@@ -1757,6 +1871,7 @@ cdef class UnsubscribeInstrumentStatus(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1773,7 +1888,8 @@ cdef class UnsubscribeInstrumentStatus(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1811,6 +1927,7 @@ cdef class UnsubscribeInstrumentClose(UnsubscribeData):
         UUID4 command_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(InstrumentClose),
@@ -1820,6 +1937,7 @@ cdef class UnsubscribeInstrumentClose(UnsubscribeData):
             command_id,
             ts_init,
             params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -1836,7 +1954,8 @@ cdef class UnsubscribeInstrumentClose(UnsubscribeData):
             f"instrument_id={self.instrument_id}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -1886,16 +2005,18 @@ cdef class RequestData(Request):
         int limit,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         Condition.is_true(client_id or venue, "Both `client_id` and `venue` were None")
         super().__init__(
             callback,
             request_id,
             ts_init,
+            correlation_id,
         )
         self.data_type = data_type
         self.instrument_id = instrument_id
@@ -1906,7 +2027,7 @@ cdef class RequestData(Request):
         self.venue = venue
         self.params = params or {}
 
-    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
         return RequestData(
             data_type=self.data_type,
             instrument_id=self.instrument_id,
@@ -1915,10 +2036,11 @@ cdef class RequestData(Request):
             limit=self.limit,
             client_id=self.client_id,
             venue=self.venue,
-            callback=self.callback,
-            request_id=self.id,
+            callback=callback,
+            request_id=UUID4(),
             ts_init=ts_init,
             params=self.params.copy(),
+            correlation_id=self.id,
         )
 
     def __str__(self) -> str:
@@ -1944,7 +2066,8 @@ cdef class RequestData(Request):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id})"
         )
 
 
@@ -1988,10 +2111,11 @@ cdef class RequestInstrument(RequestData):
         datetime end : datetime | None,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -2004,7 +2128,8 @@ cdef class RequestInstrument(RequestData):
             callback,
             request_id,
             ts_init,
-            params
+            params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -2027,7 +2152,8 @@ cdef class RequestInstrument(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -2068,10 +2194,11 @@ cdef class RequestInstruments(RequestData):
         datetime end : datetime | None,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Instrument),
@@ -2085,18 +2212,20 @@ cdef class RequestInstruments(RequestData):
             request_id,
             ts_init,
             params,
+            correlation_id,
         )
 
-    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
         return RequestInstruments(
             start=start,
             end=end,
             client_id=self.client_id,
             venue=self.venue,
-            callback=self.callback,
-            request_id=self.id,
+            callback=callback,
+            request_id=UUID4(),
             ts_init=ts_init,
             params=self.params.copy(),
+            correlation_id=self.id,
         )
 
     def __str__(self) -> str:
@@ -2117,7 +2246,8 @@ cdef class RequestInstruments(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -2157,10 +2287,11 @@ cdef class RequestOrderBookSnapshot(RequestData):
         int limit,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(OrderBookDeltas),
@@ -2173,7 +2304,8 @@ cdef class RequestOrderBookSnapshot(RequestData):
             callback,
             request_id,
             ts_init,
-            params
+            params,
+            correlation_id,
         )
 
     def __str__(self) -> str:
@@ -2194,7 +2326,121 @@ cdef class RequestOrderBookSnapshot(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class RequestOrderBookDepth(RequestData):
+    """
+    Represents a request for historical `OrderBookDepth10` data.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the request.
+    start : datetime
+        The start datetime (UTC) of request time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of request time range.
+        The inclusiveness depends on individual data client implementation.
+    limit : int
+        The limit on the amount of depth snapshots received.
+    depth : int
+        The maximum depth for the order book depth data (default is 10).
+    client_id : ClientId or ``None``
+        The data client ID for the request.
+    venue : Venue or ``None``
+        The venue for the request.
+    callback : Callable[[Any], None]
+        The delegate to call with the data.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object]
+        Additional parameters for the request.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        datetime start : datetime | None,
+        datetime end : datetime | None,
+        int limit,
+        int depth,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        callback: Callable[[Any], None] | None,
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(OrderBookDepth10),
+            instrument_id,
+            start,
+            end,
+            limit,
+            client_id,
+            venue,
+            callback,
+            request_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+        self.depth = depth
+
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
+        return RequestOrderBookDepth(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=self.limit,
+            depth=self.depth,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=callback,
+            request_id=UUID4(),
+            ts_init=ts_init,
+            params=self.params.copy(),
+            correlation_id=self.id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"depth={self.depth}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"data_type={self.data_type}{form_params_str(self.params)})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"depth={self.depth}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"callback={self.callback}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -2241,10 +2487,11 @@ cdef class RequestQuoteTicks(RequestData):
         int limit,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(QuoteTick),
@@ -2257,10 +2504,11 @@ cdef class RequestQuoteTicks(RequestData):
             callback,
             request_id,
             ts_init,
-            params
+            params,
+            correlation_id,
         )
 
-    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
         return RequestQuoteTicks(
             instrument_id=self.instrument_id,
             start=start,
@@ -2268,10 +2516,11 @@ cdef class RequestQuoteTicks(RequestData):
             limit=self.limit,
             client_id=self.client_id,
             venue=self.venue,
-            callback=self.callback,
-            request_id=self.id,
+            callback=callback,
+            request_id=UUID4(),
             ts_init=ts_init,
             params=self.params.copy(),
+            correlation_id=self.id,
         )
 
     def __str__(self) -> str:
@@ -2296,7 +2545,8 @@ cdef class RequestQuoteTicks(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 cdef class RequestTradeTicks(RequestData):
@@ -2342,10 +2592,11 @@ cdef class RequestTradeTicks(RequestData):
         int limit,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(TradeTick),
@@ -2358,10 +2609,11 @@ cdef class RequestTradeTicks(RequestData):
             callback,
             request_id,
             ts_init,
-            params
+            params,
+            correlation_id,
         )
 
-    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
         return RequestTradeTicks(
             instrument_id=self.instrument_id,
             start=start,
@@ -2369,10 +2621,11 @@ cdef class RequestTradeTicks(RequestData):
             limit=self.limit,
             client_id=self.client_id,
             venue=self.venue,
-            callback=self.callback,
-            request_id=self.id,
+            callback=callback,
+            request_id=UUID4(),
             ts_init=ts_init,
             params=self.params.copy(),
+            correlation_id=self.id,
         )
 
     def __str__(self) -> str:
@@ -2397,7 +2650,8 @@ cdef class RequestTradeTicks(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -2444,10 +2698,11 @@ cdef class RequestBars(RequestData):
         int limit,
         ClientId client_id: ClientId | None,
         Venue venue: Venue | None,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
         dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
     ) -> None:
         super().__init__(
             DataType(Bar),
@@ -2460,11 +2715,12 @@ cdef class RequestBars(RequestData):
             callback,
             request_id,
             ts_init,
-            params
+            params,
+            correlation_id,
         )
         self.bar_type = bar_type
 
-    def with_dates(self, datetime start, datetime end, uint64_t ts_init):
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
         return RequestBars(
             bar_type=self.bar_type,
             start=start,
@@ -2472,10 +2728,11 @@ cdef class RequestBars(RequestData):
             limit=self.limit,
             client_id=self.client_id,
             venue=self.venue,
-            callback=self.callback,
-            request_id=self.id,
+            callback=callback,
+            request_id=UUID4(),
             ts_init=ts_init,
             params=self.params.copy(),
+            correlation_id=self.id,
         )
 
     def __str__(self) -> str:
@@ -2500,7 +2757,99 @@ cdef class RequestBars(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
-            f"id={self.id}{form_params_str(self.params)})"
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class RequestJoin(RequestData):
+    """
+    Represents a request to join multiple data requests.
+
+    Parameters
+    ----------
+    request_ids : tuple[UUID4]
+        The tuple of sub-request IDs to join.
+    start : datetime
+        The start datetime (UTC) of request time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of request time range.
+        The inclusiveness depends on individual data client implementation.
+    callback : Callable[[Any], None]
+        The delegate to call with the data.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object]
+        Additional parameters for the request.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        tuple request_ids not None,
+        datetime start : datetime | None,
+        datetime end : datetime | None,
+        callback: Callable[[Any], None] | None,
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        Condition.not_none(request_ids, "request_ids")
+        Condition.is_true(len(request_ids) > 0, "request_ids must not be empty")
+
+        super().__init__(
+            DataType(Data),  # Generic data type for join
+            None,  # No specific instrument_id for join
+            start,
+            end,
+            0,  # No limit for join
+            ClientId("join_request"),
+            None,
+            callback,
+            request_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+        self.request_ids = request_ids
+
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
+        return RequestJoin(
+            request_ids=self.request_ids,
+            start=start,
+            end=end,
+            callback=callback,
+            request_id=UUID4(),
+            ts_init=ts_init,
+            params=self.params.copy(),
+            correlation_id=self.id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"request_ids={self.request_ids}, "
+            f"start={self.start}, "
+            f"end={self.end})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"request_ids={self.request_ids}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"callback={self.callback}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
 
@@ -2539,17 +2888,17 @@ cdef class DataResponse(Response):
     """
 
     def __init__(
-            self,
-            ClientId client_id: ClientId | None,
-            Venue venue: Venue | None,
-            DataType data_type,
-            data not None,
-            UUID4 correlation_id not None,
-            UUID4 response_id not None,
-            uint64_t ts_init,
-            datetime start,
-            datetime end,
-            dict[str, object] params: dict | None = None,
+        self,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        DataType data_type,
+        data not None,
+        UUID4 correlation_id not None,
+        UUID4 response_id not None,
+        uint64_t ts_init,
+        datetime start,
+        datetime end,
+        dict[str, object] params: dict | None = None,
     ) -> None:
         Condition.is_true(client_id or venue, "Both `client_id` and `venue` were None")
         super().__init__(

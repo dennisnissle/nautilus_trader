@@ -13,8 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::str::FromStr;
-
 use chrono::{DateTime, Utc};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -696,7 +694,7 @@ fn parse_multiplier(value: Option<f64>) -> Option<Quantity> {
 
 /// Parses the fee rate from the given `value`.
 fn parse_fee_rate(value: f64) -> Decimal {
-    Decimal::from_str(&value.to_string()).expect("Invalid decimal value")
+    Decimal::try_from(value).expect("Invalid decimal value")
 }
 
 /// Parses the given RFC 3339 datetime string (UTC) into a `UnixNanos` timestamp.
@@ -726,7 +724,7 @@ pub fn parse_settlement_currency(info: &TardisInstrumentInfo, is_inverse: bool) 
 ////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
-    use nautilus_model::{identifiers::InstrumentId, instruments::Instrument, types::Currency};
+    use nautilus_model::{identifiers::InstrumentId, instruments::Instrument};
     use rstest::rstest;
 
     use super::*;
@@ -755,6 +753,7 @@ mod tests {
         assert_eq!(inst0.multiplier(), Quantity::from(1));
         assert_eq!(inst0.activation_ns(), None);
         assert_eq!(inst0.expiration_ns(), None);
+        assert_eq!(inst0.lot_size(), Some(Quantity::from("0.0001")));
         assert_eq!(inst0.min_quantity(), Some(Quantity::from("0.0001")));
         assert_eq!(inst0.max_quantity(), None);
         assert_eq!(inst0.min_notional(), None);
@@ -778,6 +777,7 @@ mod tests {
         assert_eq!(inst1.multiplier(), Quantity::from(1));
         assert_eq!(inst1.activation_ns(), None);
         assert_eq!(inst1.expiration_ns(), None);
+        assert_eq!(inst1.lot_size(), Some(Quantity::from("0.0001")));
         assert_eq!(inst1.min_quantity(), Some(Quantity::from("0.0001")));
         assert_eq!(inst1.max_quantity(), None);
         assert_eq!(inst1.min_notional(), None);
@@ -814,6 +814,7 @@ mod tests {
         assert_eq!(instrument.multiplier(), Quantity::from(1));
         assert_eq!(instrument.activation_ns(), None);
         assert_eq!(instrument.expiration_ns(), None);
+        assert_eq!(instrument.lot_size(), Some(Quantity::from(1)));
         assert_eq!(instrument.min_quantity(), Some(Quantity::from(100)));
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);
@@ -852,12 +853,30 @@ mod tests {
             instrument.expiration_ns(),
             Some(UnixNanos::from(1_739_520_000_000_000_000))
         );
+        assert_eq!(instrument.lot_size(), Some(Quantity::from(10)));
         assert_eq!(instrument.min_quantity(), Some(Quantity::from(10)));
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);
         assert_eq!(instrument.max_notional(), None);
         assert_eq!(instrument.maker_fee(), dec!(0));
         assert_eq!(instrument.taker_fee(), dec!(0));
+    }
+
+    #[rstest]
+    fn test_parse_instrument_perpetual_current() {
+        let json_data = load_test_json("instrument_perpetual.json");
+        let info: TardisInstrumentInfo = serde_json::from_str(&json_data).unwrap();
+
+        let instrument = parse_instrument_any(info, None, Some(UnixNanos::default()), false)
+            .last()
+            .unwrap()
+            .clone();
+
+        assert_eq!(instrument.id(), InstrumentId::from("XBTUSD.BITMEX"));
+        assert_eq!(instrument.raw_symbol(), Symbol::from("XBTUSD"));
+        assert_eq!(instrument.size_increment(), Quantity::from(100));
+        assert_eq!(instrument.lot_size(), Some(Quantity::from(100)));
+        assert_eq!(instrument.min_quantity(), Some(Quantity::from(100)));
     }
 
     #[rstest]
@@ -893,6 +912,7 @@ mod tests {
             instrument.expiration_ns(),
             Some(UnixNanos::from(1_743_148_800_000_000_000))
         );
+        assert_eq!(instrument.lot_size(), Some(Quantity::from(10)));
         assert_eq!(instrument.min_quantity(), Some(Quantity::from(10)));
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);
@@ -923,7 +943,7 @@ mod tests {
         assert_eq!(instrument.base_currency(), Some(Currency::BTC()));
         assert_eq!(instrument.quote_currency(), Currency::BTC());
         assert_eq!(instrument.settlement_currency(), Currency::BTC());
-        assert!(!instrument.is_inverse());
+        assert!(instrument.is_inverse());
         assert_eq!(instrument.price_precision(), 4);
         assert_eq!(instrument.size_precision(), 1); // from amountIncrement 0.1
         assert_eq!(instrument.price_increment(), Price::from("0.0001"));
@@ -937,6 +957,7 @@ mod tests {
             instrument.expiration_ns(),
             Some(UnixNanos::from(1_745_568_000_000_000_000))
         );
+        assert_eq!(instrument.lot_size(), Some(Quantity::from("0.1")));
         assert_eq!(instrument.min_quantity(), Some(Quantity::from("0.1")));
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);

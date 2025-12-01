@@ -18,12 +18,19 @@ import pickle
 import pytest
 
 from nautilus_trader.model.identifiers import AccountId
+from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import ExecAlgorithmId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import OrderListId
+from nautilus_trader.model.identifiers import PositionId
+from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import VenueOrderId
 
 
 def test_trader_identifier() -> None:
@@ -253,6 +260,20 @@ def test_instrument_id_from_str() -> None:
     assert result == instrument_id
 
 
+def test_instrument_id_from_str_with_utf8_symbol() -> None:
+    # Arrange
+    non_ascii_symbol = "TËST-PÉRP"
+    non_ascii_instrument = "TËST-PÉRP.BINANCE"
+
+    # Act
+    result = InstrumentId.from_str(non_ascii_instrument)
+
+    # Assert
+    assert str(result.symbol) == non_ascii_symbol
+    assert str(result.venue) == "BINANCE"
+    assert str(result) == non_ascii_instrument
+
+
 @pytest.mark.parametrize(
     ("input", "expected_err"),
     [
@@ -442,3 +463,59 @@ def test_instrument_id_is_spread_true_for_symbol_with_underscore() -> None:
 
     # Act, Assert
     assert instrument_id.is_spread()
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        Symbol("AUD/USD"),
+        Venue("BINANCE"),
+        InstrumentId(Symbol("BTC/USD"), Venue("BINANCE")),
+        ComponentId("MyComponent"),
+        ClientId("MyClient"),
+        TraderId("TRADER-001"),
+        StrategyId("Strategy-001"),
+        ExecAlgorithmId("TWAP"),
+        AccountId("SIM-001"),
+        ClientOrderId("O-123456"),
+        VenueOrderId("V-123456"),
+        OrderListId("OL-123456"),
+        PositionId("P-123456"),
+        TradeId("T-123456"),
+    ],
+)
+def test_identifier_equality_with_none_returns_false(identifier) -> None:
+    # Act, Assert
+    assert (identifier == None) is False  # noqa: E711
+    assert (identifier != None) is True  # noqa: E711
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        Symbol("AUD/USD"),
+        Venue("BINANCE"),
+        InstrumentId(Symbol("BTC/USD"), Venue("BINANCE")),
+        ComponentId("MyComponent"),
+        ClientId("MyClient"),
+        TraderId("TRADER-001"),
+        StrategyId("Strategy-001"),
+        ExecAlgorithmId("TWAP"),
+        AccountId("SIM-001"),
+        ClientOrderId("O-123456"),
+        VenueOrderId("V-123456"),
+        OrderListId("OL-123456"),
+        PositionId("P-123456"),
+        TradeId("T-123456"),
+    ],
+)
+def test_identifier_ordering_comparison_with_none_raises_type_error(identifier) -> None:
+    # Act, Assert
+    with pytest.raises(TypeError):
+        _ = identifier < None
+    with pytest.raises(TypeError):
+        _ = identifier <= None
+    with pytest.raises(TypeError):
+        _ = identifier > None
+    with pytest.raises(TypeError):
+        _ = identifier >= None

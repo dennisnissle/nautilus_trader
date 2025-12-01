@@ -20,8 +20,9 @@ pub mod config;
 #[cfg(test)]
 mod tests;
 
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
+use ahash::AHashMap;
 use config::RiskEngineConfig;
 use nautilus_common::{
     cache::Cache,
@@ -32,9 +33,15 @@ use nautilus_common::{
     throttler::Throttler,
 };
 use nautilus_core::UUID4;
+use nautilus_execution::trailing::{
+    trailing_stop_calculate_with_bid_ask, trailing_stop_calculate_with_last,
+};
 use nautilus_model::{
     accounts::{Account, AccountAny},
-    enums::{InstrumentClass, OrderSide, OrderStatus, TimeInForce, TradingState},
+    enums::{
+        InstrumentClass, OrderSide, OrderStatus, TimeInForce, TradingState, TrailingOffsetType,
+        TriggerType,
+    },
     events::{OrderDenied, OrderEventAny, OrderModifyRejected},
     identifiers::InstrumentId,
     instruments::{Instrument, InstrumentAny},
@@ -61,7 +68,7 @@ pub struct RiskEngine {
     portfolio: Portfolio,
     pub throttled_submit_order: Throttler<SubmitOrder, SubmitOrderFn>,
     pub throttled_modify_order: Throttler<ModifyOrder, ModifyOrderFn>,
-    max_notional_per_order: HashMap<InstrumentId, Decimal>,
+    max_notional_per_order: AHashMap<InstrumentId, Decimal>,
     trading_state: TradingState,
     config: RiskEngineConfig,
 }
@@ -92,7 +99,7 @@ impl RiskEngine {
             portfolio,
             throttled_submit_order,
             throttled_modify_order,
-            max_notional_per_order: HashMap::new(),
+            max_notional_per_order: AHashMap::new(),
             trading_state: TradingState::Active,
             config,
         }
@@ -138,7 +145,7 @@ impl RiskEngine {
             "ORDER_SUBMIT_THROTTLER".to_string(),
             success_handler,
             Some(failure_handler),
-            Ustr::from(&UUID4::new().to_string()),
+            Ustr::from(UUID4::new().as_str()),
         )
     }
 
@@ -185,7 +192,7 @@ impl RiskEngine {
             "ORDER_MODIFY_THROTTLER".to_string(),
             success_handler,
             Some(failure_handler),
-            Ustr::from(&UUID4::new().to_string()),
+            Ustr::from(UUID4::new().as_str()),
         )
     }
 
@@ -491,7 +498,7 @@ impl RiskEngine {
         }
 
         // Check Quantity
-        risk_msg = self.check_quantity(&instrument, command.quantity);
+        risk_msg = self.check_quantity(&instrument, command.quantity, order.is_quote_quantity());
         if let Some(risk_msg) = risk_msg {
             self.reject_modify_order(order, &risk_msg);
             return; // Denied
@@ -577,7 +584,11 @@ impl RiskEngine {
     }
 
     fn check_order_quantity(&self, instrument: InstrumentAny, order: OrderAny) -> bool {
-        let risk_msg = self.check_quantity(&instrument, Some(order.quantity()));
+        let risk_msg = self.check_quantity(
+            &instrument,
+            Some(order.quantity()),
+            order.is_quote_quantity(),
+        );
         if let Some(risk_msg) = risk_msg {
             self.deny_order(order, &risk_msg);
             return false; // Denied
@@ -663,11 +674,105 @@ impl RiskEngine {
                     if let Some(trigger_price) = order.trigger_price() {
                         Some(trigger_price)
                     } else {
-                        log::warn!(
-                            "Cannot check {} order risk: no trigger price was set", // TODO: Use last_trade += offset
-                            order.order_type()
-                        );
-                        continue;
+                        // Validate trailing offset type is supported
+                        let offset_type = order.trailing_offset_type().unwrap();
+                        if !matches!(
+                            offset_type,
+                            TrailingOffsetType::Price
+                                | TrailingOffsetType::BasisPoints
+                                | TrailingOffsetType::Ticks
+                        ) {
+                            self.deny_order(
+                                order.clone(),
+                                &format!("UNSUPPORTED_TRAILING_OFFSET_TYPE: {offset_type:?}"),
+                            );
+                            return false;
+                        }
+
+                        let trigger_type = order.trigger_type().unwrap();
+                        let cache = self.cache.borrow();
+
+                        if trigger_type == TriggerType::BidAsk {
+                            if let Some(quote) = cache.quote(&instrument.id()) {
+                                match trailing_stop_calculate_with_bid_ask(
+                                    instrument.price_increment(),
+                                    order.trailing_offset_type().unwrap(),
+                                    order.order_side_specified(),
+                                    order.trailing_offset().unwrap(),
+                                    quote.bid_price,
+                                    quote.ask_price,
+                                ) {
+                                    Ok(calculated_trigger) => Some(calculated_trigger),
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Cannot check {} order risk: failed to calculate trigger price from trailing offset: {e}",
+                                            order.order_type()
+                                        );
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                log::warn!(
+                                    "Cannot check {} order risk: no trigger price set and no bid/ask quotes available for {}",
+                                    order.order_type(),
+                                    instrument.id()
+                                );
+                                continue;
+                            }
+                        } else if let Some(last_trade) = cache.trade(&instrument.id()) {
+                            match trailing_stop_calculate_with_last(
+                                instrument.price_increment(),
+                                order.trailing_offset_type().unwrap(),
+                                order.order_side_specified(),
+                                order.trailing_offset().unwrap(),
+                                last_trade.price,
+                            ) {
+                                Ok(calculated_trigger) => Some(calculated_trigger),
+                                Err(e) => {
+                                    log::warn!(
+                                        "Cannot check {} order risk: failed to calculate trigger price from trailing offset: {}",
+                                        order.order_type(),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            }
+                        } else if trigger_type == TriggerType::LastOrBidAsk {
+                            // Fallback to bid/ask when no trade data available
+                            if let Some(quote) = cache.quote(&instrument.id()) {
+                                match trailing_stop_calculate_with_bid_ask(
+                                    instrument.price_increment(),
+                                    order.trailing_offset_type().unwrap(),
+                                    order.order_side_specified(),
+                                    order.trailing_offset().unwrap(),
+                                    quote.bid_price,
+                                    quote.ask_price,
+                                ) {
+                                    Ok(calculated_trigger) => Some(calculated_trigger),
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Cannot check {} order risk: failed to calculate trigger price from trailing offset: {e}",
+                                            order.order_type()
+                                        );
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                log::warn!(
+                                    "Cannot check {} order risk: no trigger price set and no market data available for {}",
+                                    order.order_type(),
+                                    instrument.id()
+                                );
+                                continue;
+                            }
+                        } else {
+                            log::warn!(
+                                "Cannot check {} order risk: no trigger price set and no market data available for {}",
+                                order.order_type(),
+                                instrument.id()
+                            );
+                            continue;
+                        }
                     }
                 }
                 _ => order.price(),
@@ -680,11 +785,58 @@ impl RiskEngine {
                 continue;
             };
 
+            // For quote quantity limit orders, use worst-case execution price
+            let effective_price = if order.is_quote_quantity()
+                && !instrument.is_inverse()
+                && matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+            {
+                // Get current market price for worst-case execution
+                let cache = self.cache.borrow();
+                if let Some(quote_tick) = cache.quote(&instrument.id()) {
+                    match order.order_side() {
+                        // BUY: could execute at best ask if below limit (more quantity)
+                        OrderSide::Buy => last_px.min(quote_tick.ask_price),
+                        // SELL: could execute at best bid if above limit (but less quantity, so use limit)
+                        OrderSide::Sell => last_px.max(quote_tick.bid_price),
+                        _ => last_px,
+                    }
+                } else {
+                    last_px // No market data, use limit price
+                }
+            } else {
+                last_px
+            };
+
             let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
-                instrument.calculate_base_quantity(order.quantity(), last_px)
+                instrument.calculate_base_quantity(order.quantity(), effective_price)
             } else {
                 order.quantity()
             };
+
+            // Check min/max quantity against effective quantity
+            if let Some(max_quantity) = instrument.max_quantity()
+                && effective_quantity > max_quantity
+            {
+                self.deny_order(
+                    order.clone(),
+                    &format!(
+                        "QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={max_quantity}"
+                    ),
+                );
+                return false; // Denied
+            }
+
+            if let Some(min_quantity) = instrument.min_quantity()
+                && effective_quantity < min_quantity
+            {
+                self.deny_order(
+                    order.clone(),
+                    &format!(
+                        "QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={min_quantity}"
+                    ),
+                );
+                return false; // Denied
+            }
 
             let notional =
                 instrument.calculate_notional_value(effective_quantity, last_px, Some(true));
@@ -788,30 +940,47 @@ impl RiskEngine {
                 }
             } else if order.is_sell() {
                 if cash_account.base_currency.is_some() {
-                    match cum_notional_sell.as_mut() {
-                        Some(cum_notional_buy_val) => {
-                            cum_notional_buy_val.raw += order_balance_impact.raw;
+                    if order.is_reduce_only() {
+                        if self.config.debug {
+                            log::debug!(
+                                "Reduce-only SELL skips cumulative notional free-balance check"
+                            );
                         }
-                        None => {
-                            cum_notional_sell = Some(Money::from_raw(
-                                order_balance_impact.raw,
-                                order_balance_impact.currency,
-                            ));
+                    } else {
+                        match cum_notional_sell.as_mut() {
+                            Some(cum_notional_buy_val) => {
+                                cum_notional_buy_val.raw += order_balance_impact.raw;
+                            }
+                            None => {
+                                cum_notional_sell = Some(Money::from_raw(
+                                    order_balance_impact.raw,
+                                    order_balance_impact.currency,
+                                ));
+                            }
                         }
-                    }
-                    if self.config.debug {
-                        log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
-                    }
+                        if self.config.debug {
+                            log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
+                        }
 
-                    if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
-                        && cum_notional_sell > free
-                    {
-                        self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));
-                        return false; // Denied
+                        if let (Some(free), Some(cum_notional_sell)) = (free, cum_notional_sell)
+                            && cum_notional_sell > free
+                        {
+                            self.deny_order(order.clone(), &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, cum_notional={cum_notional_sell}"));
+                            return false; // Denied
+                        }
                     }
                 }
                 // Account is already of type Cash, so no check
                 else if let Some(base_currency) = base_currency {
+                    if order.is_reduce_only() {
+                        if self.config.debug {
+                            log::debug!(
+                                "Reduce-only SELL skips base-currency cumulative free check"
+                            );
+                        }
+                        continue;
+                    }
+
                     let cash_value = Money::from_raw(
                         effective_quantity
                             .raw
@@ -835,8 +1004,9 @@ impl RiskEngine {
                     }
 
                     match cum_notional_sell {
-                        Some(mut cum_notional_sell) => {
-                            cum_notional_sell.raw += cash_value.raw;
+                        Some(mut value) => {
+                            value.raw += cash_value.raw;
+                            cum_notional_sell = Some(value);
                         }
                         None => cum_notional_sell = Some(cash_value),
                     }
@@ -870,7 +1040,13 @@ impl RiskEngine {
             ));
         }
 
-        if instrument.instrument_class() != InstrumentClass::Option && price_val.raw <= 0 {
+        if !matches!(
+            instrument.instrument_class(),
+            InstrumentClass::Option
+                | InstrumentClass::FuturesSpread
+                | InstrumentClass::OptionSpread
+        ) && price_val.raw <= 0
+        {
             return Some(format!("price {price_val} invalid (<= 0)"));
         }
 
@@ -881,6 +1057,7 @@ impl RiskEngine {
         &self,
         instrument: &InstrumentAny,
         quantity: Option<Quantity>,
+        is_quote_quantity: bool,
     ) -> Option<String> {
         let quantity_val = quantity?;
 
@@ -894,6 +1071,11 @@ impl RiskEngine {
             ));
         }
 
+        // Skip min/max checks for quote quantities (they will be checked in check_orders_risk using effective_quantity)
+        if is_quote_quantity {
+            return None;
+        }
+
         // Check maximum quantity
         if let Some(max_quantity) = instrument.max_quantity()
             && quantity_val > max_quantity
@@ -903,7 +1085,7 @@ impl RiskEngine {
             ));
         }
 
-        // // Check minimum quantity
+        // Check minimum quantity
         if let Some(min_quantity) = instrument.min_quantity()
             && quantity_val < min_quantity
         {
@@ -942,14 +1124,17 @@ impl RiskEngine {
             return;
         }
 
-        let mut cache = self.cache.borrow_mut();
-        if !cache.order_exists(&order.client_order_id()) {
-            cache
-                .add_order(order.clone(), None, None, false)
-                .map_err(|e| {
-                    log::error!("Cannot add order to cache: {e}");
-                })
-                .unwrap();
+        // Scope the cache borrow to avoid RefCell conflict when sending to ExecEngine
+        {
+            let mut cache = self.cache.borrow_mut();
+            if !cache.order_exists(&order.client_order_id()) {
+                cache
+                    .add_order(order.clone(), None, None, false)
+                    .map_err(|e| {
+                        log::error!("Cannot add order to cache: {e}");
+                    })
+                    .unwrap();
+            }
         }
 
         let denied = OrderEventAny::Denied(OrderDenied::new(

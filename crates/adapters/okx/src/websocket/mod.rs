@@ -27,8 +27,10 @@
 pub mod client;
 pub mod enums;
 pub mod error;
+pub mod handler;
 pub mod messages;
 pub mod parse;
+pub mod subscription;
 
 // Re-exports
 pub use crate::websocket::client::OKXWebSocketClient;

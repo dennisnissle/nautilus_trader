@@ -13,6 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use nautilus_network::http::HttpClientError;
 use thiserror::Error;
 
 /// Comprehensive error type for Hyperliquid operations
@@ -142,41 +143,41 @@ impl Error {
         } else if let Some(status) = error.status() {
             let status_code = status.as_u16();
             match status_code {
-                401 | 403 => Self::auth(format!("HTTP {}: authentication failed", status_code)),
-                400 => Self::bad_request(format!("HTTP {}: bad request", status_code)),
-                429 => Self::rate_limit("unknown", 0, None), // TODO: Extract retry-after header
-                500..=599 => Self::exchange(format!("HTTP {}: server error", status_code)),
-                _ => Self::http(status_code, format!("HTTP error: {}", error)),
+                401 | 403 => Self::auth(format!("HTTP {status_code}: authentication failed")),
+                400 => Self::bad_request(format!("HTTP {status_code}: bad request")),
+                429 => Self::rate_limit("unknown", 0, None),
+                500..=599 => Self::exchange(format!("HTTP {status_code}: server error")),
+                _ => Self::http(status_code, format!("HTTP error: {error}")),
             }
         } else if error.is_connect() || error.is_request() {
-            Self::transport(format!("Request error: {}", error))
+            Self::transport(format!("Request error: {error}"))
         } else {
-            Self::transport(format!("Unknown reqwest error: {}", error))
+            Self::transport(format!("Unknown reqwest error: {error}"))
         }
     }
 
     /// Map HTTP client errors to appropriate error types
-    pub fn from_http_client(error: nautilus_network::http::HttpClientError) -> Self {
-        Self::transport(format!("HTTP client error: {}", error))
+    pub fn from_http_client(error: HttpClientError) -> Self {
+        Self::transport(format!("HTTP client error: {error}"))
     }
 
     /// Check if error is retryable
     pub fn is_retryable(&self) -> bool {
         match self {
-            Error::Transport(_) | Error::Timeout | Error::RateLimit { .. } => true,
-            Error::Http { status, .. } => *status >= 500,
+            Self::Transport(_) | Self::Timeout | Self::RateLimit { .. } => true,
+            Self::Http { status, .. } => *status >= 500,
             _ => false,
         }
     }
 
     /// Check if error is due to rate limiting
     pub fn is_rate_limited(&self) -> bool {
-        matches!(self, Error::RateLimit { .. })
+        matches!(self, Self::RateLimit { .. })
     }
 
     /// Check if error is due to authentication issues
     pub fn is_auth_error(&self) -> bool {
-        matches!(self, Error::Auth(_))
+        matches!(self, Self::Auth(_))
     }
 }
 

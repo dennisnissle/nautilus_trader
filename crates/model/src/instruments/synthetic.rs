@@ -97,7 +97,7 @@ impl<'de> Deserialize<'de> for SyntheticInstrument {
         let operator_tree =
             evalexpr::build_operator_tree(&fields.formula).map_err(serde::de::Error::custom)?;
 
-        Ok(SyntheticInstrument {
+        Ok(Self {
             id: fields.id,
             price_precision: fields.price_precision,
             price_increment: fields.price_increment,
@@ -191,14 +191,10 @@ impl SyntheticInstrument {
 
     /// Calculates the price of the synthetic instrument based on component input prices provided as a map.
     ///
-    /// # Panics
-    ///
-    /// Panics if a required component price is missing from the input map,
-    /// or if setting the value in the evaluation context fails.
-    ///
     /// # Errors
     ///
-    /// Returns an error if formula evaluation fails.
+    /// Returns an error if formula evaluation fails, a required component price is missing
+    /// from the input map, or if setting the value in the evaluation context fails.
     pub fn calculate_from_map(&mut self, inputs: &HashMap<String, f64>) -> anyhow::Result<Price> {
         let mut input_values = Vec::new();
 
@@ -207,9 +203,11 @@ impl SyntheticInstrument {
                 input_values.push(value);
                 self.context
                     .set_value(variable.clone(), Value::Float(value))
-                    .expect("TODO: Unable to set value");
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to set value for variable {variable}: {e}")
+                    })?;
             } else {
-                panic!("Missing price for component: {variable}");
+                anyhow::bail!("Missing price for component: {variable}");
             }
         }
 

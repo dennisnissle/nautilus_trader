@@ -13,6 +13,8 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Error definitions for the BitMEX WebSocket client.
+
 use thiserror::Error;
 use tokio_tungstenite::tungstenite;
 
@@ -50,6 +52,16 @@ impl From<serde_json::Error> for BitmexWsError {
         Self::JsonError(error.to_string())
     }
 }
+
+impl From<String> for BitmexWsError {
+    fn from(msg: String) -> Self {
+        Self::AuthenticationError(msg)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

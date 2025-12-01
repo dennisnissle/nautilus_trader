@@ -48,6 +48,7 @@ pub trait Reference:
     /// Returns a reference point that lies at most `duration` in the
     /// past from the current reference. If an underflow should occur,
     /// returns the current reference.
+    #[must_use]
     fn saturating_sub(&self, duration: Nanos) -> Self;
 }
 
@@ -109,11 +110,11 @@ impl FakeRelativeClock {
 
         let mut prev = self.now.load(Ordering::Acquire);
         let mut next = prev + by;
-        while let Err(next_prev) =
+        while let Err(e) =
             self.now
                 .compare_exchange_weak(prev, next, Ordering::Release, Ordering::Relaxed)
         {
-            prev = next_prev;
+            prev = e;
             next = prev + by;
         }
     }

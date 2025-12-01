@@ -38,7 +38,7 @@ use crate::{
     },
     clock::Clock,
     msgbus::{
-        self,
+        self, Endpoint, MStr,
         handler::{MessageHandler, ShareableMessageHandler},
     },
     timer::{TimeEvent, TimeEventCallback},
@@ -83,7 +83,7 @@ pub struct Throttler<T, F> {
     /// The interval between messages in nanoseconds.
     interval: u64,
     /// The name of the timer.
-    timer_name: String,
+    timer_name: Ustr,
     /// The callback to send a message.
     output_send: F,
     /// The callback to drop a message.
@@ -147,7 +147,7 @@ where
             timestamps: VecDeque::with_capacity(limit),
             clock,
             interval,
-            timer_name,
+            timer_name: Ustr::from(&timer_name),
             output_send,
             output_drop,
             actor_id,
@@ -167,7 +167,7 @@ where
     pub fn set_timer(&mut self, callback: Option<TimeEventCallback>) {
         let delta = self.delta_next();
         let mut clock = self.clock.borrow_mut();
-        if clock.timer_names().contains(&self.timer_name.as_str()) {
+        if clock.timer_exists(&self.timer_name) {
             clock.cancel_timer(&self.timer_name);
         }
         let alert_ts = clock.timestamp_ns() + delta;
@@ -297,7 +297,7 @@ where
 /// is registered as a separated endpoint on the message bus as `{actor_id}_process`.
 struct ThrottlerProcess<T, F> {
     actor_id: Ustr,
-    endpoint: Ustr,
+    endpoint: MStr<Endpoint>,
     phantom_t: PhantomData<T>,
     phantom_f: PhantomData<F>,
 }
@@ -307,7 +307,7 @@ where
     T: Debug,
 {
     pub fn new(actor_id: Ustr) -> Self {
-        let endpoint = Ustr::from(&format!("{actor_id}_process"));
+        let endpoint = MStr::endpoint(format!("{actor_id}_process")).expect(FAILED);
         Self {
             actor_id,
             endpoint,
@@ -317,11 +317,10 @@ where
     }
 
     pub fn get_timer_callback(&self) -> TimeEventCallback {
-        let endpoint = self.endpoint.into(); // TODO: Optimize this
-        let process_callback = Rc::new(move |event: TimeEvent| {
+        let endpoint = self.endpoint;
+        TimeEventCallback::from(move |event: TimeEvent| {
             msgbus::send_any(endpoint, &(event));
-        });
-        TimeEventCallback::Rust(process_callback)
+        })
     }
 }
 
@@ -331,7 +330,7 @@ where
     F: Fn(T) + 'static,
 {
     fn id(&self) -> Ustr {
-        self.endpoint
+        *self.endpoint
     }
 
     fn handle(&self, _message: &dyn Any) {
@@ -345,13 +344,12 @@ where
             if !throttler.buffer.is_empty() && throttler.delta_next() > 0 {
                 throttler.is_limiting = true;
 
-                let endpoint = self.endpoint.into(); // TODO: Optimize this
+                let endpoint = self.endpoint;
 
                 // Send message to throttler process endpoint to resume
-                let process_callback = Rc::new(move |event: TimeEvent| {
+                throttler.set_timer(Some(TimeEventCallback::from(move |event: TimeEvent| {
                     msgbus::send_any(endpoint, &(event));
-                });
-                throttler.set_timer(Some(TimeEventCallback::Rust(process_callback)));
+                })));
                 return;
             }
         }
@@ -370,12 +368,10 @@ where
     T: 'static + Debug,
     F: Fn(T) + 'static,
 {
-    let callback = Rc::new(move |_event: TimeEvent| {
+    TimeEventCallback::from(move |_event: TimeEvent| {
         let throttler = get_actor_unchecked::<Throttler<T, F>>(&actor_id);
         throttler.is_limiting = false;
-    });
-
-    TimeEventCallback::Rust(callback)
+    })
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -392,8 +388,8 @@ mod tests {
     use rstest::{fixture, rstest};
     use ustr::Ustr;
 
-    use super::{RateLimit, Throttler};
-    use crate::clock::TestClock;
+    use super::{RateLimit, Throttler, ThrottlerProcess};
+    use crate::{clock::TestClock, msgbus::handler::MessageHandler};
     type SharedThrottler = Rc<UnsafeCell<Throttler<u64, Box<dyn Fn(u64)>>>>;
 
     /// Test throttler with default values for testing
@@ -424,7 +420,7 @@ mod tests {
         let inner_clock = Rc::clone(&clock);
         let rate_limit = RateLimit::new(5, 10);
         let interval = rate_limit.interval_ns;
-        let actor_id = Ustr::from(&UUID4::new().to_string());
+        let actor_id = Ustr::from(UUID4::new().as_str());
 
         TestThrottler {
             throttler: Throttler::new(
@@ -454,7 +450,7 @@ mod tests {
         let inner_clock = Rc::clone(&clock);
         let rate_limit = RateLimit::new(5, 10);
         let interval = rate_limit.interval_ns;
-        let actor_id = Ustr::from(&UUID4::new().to_string());
+        let actor_id = Ustr::from(UUID4::new().as_str());
 
         TestThrottler {
             throttler: Throttler::new(
@@ -775,7 +771,7 @@ mod tests {
             }
 
             // Check the throttler rate limits on the appropriate conditions
-            // * Atleast one message is buffered
+            // * At least one message is buffered
             // * Timestamp queue is filled upto limit
             // * Least recent timestamp in queue exceeds interval
             let buffered_messages = throttler.qsize() > 0;
@@ -804,27 +800,6 @@ mod tests {
         assert_eq!(throttler.qsize(), 0);
     }
 
-    #[ignore = "Used for manually testing failing cases"]
-    #[rstest]
-    fn test_case() {
-        let inputs = [
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::AdvanceClock(5),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::AdvanceClock(5),
-            ThrottlerInput::SendMessage(42),
-            ThrottlerInput::SendMessage(42),
-        ]
-        .to_vec();
-
-        let test_throttler = test_throttler_buffered();
-        test_throttler_with_inputs(inputs, test_throttler);
-    }
-
     #[rstest]
     #[allow(unsafe_code)]
     fn prop_test() {
@@ -837,5 +812,23 @@ mod tests {
             throttler.reset();
             throttler.clock.borrow_mut().reset();
         });
+    }
+
+    #[rstest]
+    fn test_throttler_process_id_returns_ustr() {
+        // This test verifies that ThrottlerProcess::id() correctly returns Ustr
+        // by dereferencing MStr<Endpoint> (tests *self.endpoint -> Ustr conversion)
+        let actor_id = Ustr::from("test_throttler");
+        let process = ThrottlerProcess::<String, fn(String)>::new(actor_id);
+
+        // Call id() which does *self.endpoint
+        let handler_id: Ustr = process.id();
+
+        // Verify it's a valid Ustr with expected format
+        assert!(handler_id.as_str().contains("test_throttler_process"));
+        assert!(!handler_id.is_empty());
+
+        // Verify type - this wouldn't compile if id() didn't return Ustr
+        let _type_check: Ustr = handler_id;
     }
 }

@@ -24,21 +24,23 @@ use std::{cell::RefCell, rc::Rc};
 
 #[cfg(feature = "defi")]
 use nautilus_common::messages::defi::{
-    DefiSubscribeCommand, DefiUnsubscribeCommand, SubscribeBlocks, SubscribePool,
+    DefiRequestCommand, DefiSubscribeCommand, DefiUnsubscribeCommand, RequestPoolSnapshot,
+    SubscribeBlocks, SubscribePool, SubscribePoolFeeCollects, SubscribePoolFlashEvents,
     SubscribePoolLiquidityUpdates, SubscribePoolSwaps, UnsubscribeBlocks, UnsubscribePool,
-    UnsubscribePoolLiquidityUpdates, UnsubscribePoolSwaps,
+    UnsubscribePoolFeeCollects, UnsubscribePoolFlashEvents, UnsubscribePoolLiquidityUpdates,
+    UnsubscribePoolSwaps,
 };
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
     messages::data::{
-        DataCommand, RequestBars, RequestBookSnapshot, RequestCommand, RequestCustomData,
-        RequestInstrument, RequestInstruments, RequestQuotes, RequestTrades, SubscribeBars,
-        SubscribeBookDeltas, SubscribeBookDepth10, SubscribeBookSnapshots, SubscribeCommand,
-        SubscribeCustomData, SubscribeFundingRates, SubscribeIndexPrices, SubscribeInstrument,
-        SubscribeInstrumentClose, SubscribeInstrumentStatus, SubscribeInstruments,
-        SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades, UnsubscribeBars,
-        UnsubscribeBookDeltas, UnsubscribeBookDepth10, UnsubscribeBookSnapshots,
+        DataCommand, RequestBars, RequestBookDepth, RequestBookSnapshot, RequestCommand,
+        RequestCustomData, RequestInstrument, RequestInstruments, RequestQuotes, RequestTrades,
+        SubscribeBars, SubscribeBookDeltas, SubscribeBookDepth10, SubscribeBookSnapshots,
+        SubscribeCommand, SubscribeCustomData, SubscribeFundingRates, SubscribeIndexPrices,
+        SubscribeInstrument, SubscribeInstrumentClose, SubscribeInstrumentStatus,
+        SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
+        UnsubscribeBars, UnsubscribeBookDeltas, UnsubscribeBookDepth10, UnsubscribeBookSnapshots,
         UnsubscribeCommand, UnsubscribeCustomData, UnsubscribeFundingRates, UnsubscribeIndexPrices,
         UnsubscribeInstrument, UnsubscribeInstrumentClose, UnsubscribeInstrumentStatus,
         UnsubscribeInstruments, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
@@ -93,7 +95,7 @@ impl MockDataClient {
     }
 }
 
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 impl DataClient for MockDataClient {
     fn client_id(&self) -> ClientId {
         self.client_id
@@ -322,6 +324,32 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
+    #[cfg(feature = "defi")]
+    fn subscribe_pool_fee_collects(
+        &mut self,
+        cmd: &SubscribePoolFeeCollects,
+    ) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut().push(DataCommand::DefiSubscribe(
+                DefiSubscribeCommand::PoolFeeCollects(cmd.clone()),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "defi")]
+    fn subscribe_pool_flash_events(
+        &mut self,
+        cmd: &SubscribePoolFlashEvents,
+    ) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut().push(DataCommand::DefiSubscribe(
+                DefiSubscribeCommand::PoolFlashEvents(cmd.clone()),
+            ));
+        }
+        Ok(())
+    }
+
     fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
         if let Some(rec) = &self.recorder {
             rec.borrow_mut()
@@ -510,6 +538,32 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
+    #[cfg(feature = "defi")]
+    fn unsubscribe_pool_fee_collects(
+        &mut self,
+        cmd: &UnsubscribePoolFeeCollects,
+    ) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut().push(DataCommand::DefiUnsubscribe(
+                DefiUnsubscribeCommand::PoolFeeCollects(cmd.clone()),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "defi")]
+    fn unsubscribe_pool_flash_events(
+        &mut self,
+        cmd: &UnsubscribePoolFlashEvents,
+    ) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut().push(DataCommand::DefiUnsubscribe(
+                DefiUnsubscribeCommand::PoolFlashEvents(cmd.clone()),
+            ));
+        }
+        Ok(())
+    }
+
     // -- REQUEST HANDLERS ------------------------------------------------------------------------
 
     fn request_data(&self, request: &RequestCustomData) -> anyhow::Result<()> {
@@ -577,6 +631,27 @@ impl DataClient for MockDataClient {
         }
         Ok(())
     }
+
+    fn request_book_depth(&self, request: &RequestBookDepth) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::Request(RequestCommand::BookDepth(
+                    request.clone(),
+                )));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "defi")]
+    fn request_pool_snapshot(&self, request: &RequestPoolSnapshot) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::DefiRequest(DefiRequestCommand::PoolSnapshot(
+                    request.clone(),
+                )));
+        }
+        Ok(())
+    }
 }
 
 // SAFETY: Cannot be sent across thread boundaries
@@ -584,3 +659,75 @@ impl DataClient for MockDataClient {
 unsafe impl Send for MockDataClient {}
 #[allow(unsafe_code)]
 unsafe impl Sync for MockDataClient {}
+
+/// A mock data client that fails on connect for testing error propagation.
+pub struct FailingMockDataClient {
+    pub client_id: ClientId,
+    pub venue: Option<Venue>,
+    pub error_message: String,
+}
+
+impl FailingMockDataClient {
+    /// Creates a new [`FailingMockDataClient`] that will fail with the given error message.
+    #[must_use]
+    pub fn new(
+        client_id: ClientId,
+        venue: Option<Venue>,
+        error_message: impl Into<String>,
+    ) -> Self {
+        Self {
+            client_id,
+            venue,
+            error_message: error_message.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl DataClient for FailingMockDataClient {
+    fn client_id(&self) -> ClientId {
+        self.client_id
+    }
+
+    fn venue(&self) -> Option<Venue> {
+        self.venue
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn dispose(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn connect(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("{}", self.error_message)
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        false
+    }
+
+    fn is_disconnected(&self) -> bool {
+        true
+    }
+}
+
+// SAFETY: Cannot be sent across thread boundaries
+#[allow(unsafe_code)]
+unsafe impl Send for FailingMockDataClient {}
+#[allow(unsafe_code)]
+unsafe impl Sync for FailingMockDataClient {}

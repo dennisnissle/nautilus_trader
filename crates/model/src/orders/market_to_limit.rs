@@ -18,7 +18,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use anyhow;
 use indexmap::IndexMap;
 use nautilus_core::{UUID4, UnixNanos, correctness::FAILED};
 use rust_decimal::Decimal;
@@ -371,6 +370,10 @@ impl Order for MarketToLimitOrder {
 
     fn leaves_qty(&self) -> Quantity {
         self.leaves_qty
+    }
+
+    fn overfill_qty(&self) -> Quantity {
+        self.overfill_qty
     }
 
     fn avg_px(&self) -> Option<f64> {

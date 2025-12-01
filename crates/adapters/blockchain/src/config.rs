@@ -13,14 +13,24 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use std::any::Any;
+
 use nautilus_infrastructure::sql::pg::PostgresConnectOptions;
-use nautilus_model::defi::{DexType, SharedChain};
+use nautilus_model::{
+    defi::{Chain, DexType, SharedChain},
+    identifiers::{AccountId, TraderId},
+};
+use nautilus_system::ClientConfig;
 
 /// Defines filtering criteria for the DEX pool universe that the data client will operate on.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.blockchain")
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.blockchain")
 )]
 pub struct DexPoolFilters {
     /// Whether to exclude pools containing tokens with empty name or symbol fields.
@@ -52,6 +62,10 @@ impl Default for DexPoolFilters {
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.blockchain")
 )]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.adapters.blockchain")
+)]
 pub struct BlockchainDataClientConfig {
     /// The blockchain chain configuration.
     pub chain: SharedChain,
@@ -67,6 +81,13 @@ pub struct BlockchainDataClientConfig {
     pub multicall_calls_per_rpc_request: u32,
     /// The WebSocket secure URL for the blockchain RPC endpoint.
     pub wss_rpc_url: Option<String>,
+    /// Optional HTTP proxy URL for RPC requests.
+    pub http_proxy_url: Option<String>,
+    /// Optional WebSocket proxy URL for RPC connections.
+    ///
+    /// Note: WebSocket proxy support is not yet implemented. This field is reserved
+    /// for future functionality. Use `http_proxy_url` for REST API proxy support.
+    pub ws_proxy_url: Option<String>,
     /// The block from which to sync historical data.
     pub from_block: Option<u64>,
     /// Filtering criteria that define which DEX pools to include in the data universe.
@@ -97,11 +118,59 @@ impl BlockchainDataClientConfig {
             use_hypersync_for_live_data,
             http_rpc_url,
             rpc_requests_per_second,
-            multicall_calls_per_rpc_request: multicall_calls_per_rpc_request.unwrap_or(100),
+            multicall_calls_per_rpc_request: multicall_calls_per_rpc_request.unwrap_or(200),
             wss_rpc_url,
+            http_proxy_url: None,
+            ws_proxy_url: None,
             from_block,
             pool_filters: pools_filters.unwrap_or_default(),
             postgres_cache_database_config,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockchainExecutionClientConfig {
+    /// The trader ID for the client.
+    pub trader_id: TraderId,
+    /// The account ID for the client.
+    pub client_id: AccountId,
+    /// The blockchain chain configuration.
+    pub chain: Chain,
+    /// The wallet address of the execution client.
+    pub wallet_address: String,
+    /// Token universe: set of ERC-20 token addresses to monitor for balance tracking.
+    pub tokens: Option<Vec<String>>,
+    /// The HTTP URL for the blockchain RPC endpoint.
+    pub http_rpc_url: String,
+    /// The maximum number of RPC requests allowed per second.
+    pub rpc_requests_per_second: Option<u32>,
+}
+
+impl BlockchainExecutionClientConfig {
+    pub fn new(
+        trader_id: TraderId,
+        client_id: AccountId,
+        chain: Chain,
+        wallet_address: String,
+        tokens: Option<Vec<String>>,
+        http_rpc_url: String,
+        rpc_requests_per_second: Option<u32>,
+    ) -> Self {
+        Self {
+            trader_id,
+            client_id,
+            chain,
+            wallet_address,
+            tokens,
+            http_rpc_url,
+            rpc_requests_per_second,
+        }
+    }
+}
+
+impl ClientConfig for BlockchainExecutionClientConfig {
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

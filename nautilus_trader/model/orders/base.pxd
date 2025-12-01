@@ -52,7 +52,8 @@ from nautilus_trader.model.objects cimport Quantity
 
 cdef set[OrderType] STOP_ORDER_TYPES
 cdef set[OrderType] LIMIT_ORDER_TYPES
-cdef set[OrderStatus] LOCAL_ACTIVE_ORDER_STATUS
+cdef set[OrderStatus] CANCELLABLE_ORDER_STATUSES
+cdef set[OrderStatus] LOCAL_ACTIVE_ORDER_STATUSES
 
 
 cdef class Order:
@@ -100,6 +101,8 @@ cdef class Order:
     """The order total filled quantity.\n\n:returns: `Quantity`"""
     cdef readonly Quantity leaves_qty
     """The order total leaves quantity.\n\n:returns: `Quantity`"""
+    cdef readonly Quantity overfill_qty
+    """The order total overfill quantity (filled beyond original quantity).\n\n:returns: `Quantity`"""
     cdef readonly double avg_px
     """The order average fill price.\n\n:returns: `double`"""
     cdef readonly double slippage
@@ -144,6 +147,7 @@ cdef class Order:
     cpdef str tif_string(self)
     cpdef dict to_dict(self)
 
+    cpdef void set_quote_quantity(self, bint value)
     cdef void set_activated_c(self, Price activation_price)
     cdef void set_triggered_price_c(self, Price triggered_price)
     cdef Price get_triggered_price_c(self)
@@ -191,6 +195,8 @@ cdef class Order:
 
     cpdef void apply(self, OrderEvent event)
 
+    cdef Quantity calculate_overfill_c(self, Quantity fill_qty)
+    cdef bint is_duplicate_fill_c(self, OrderFilled fill)
     cdef void _denied(self, OrderDenied event)
     cdef void _submitted(self, OrderSubmitted event)
     cdef void _rejected(self, OrderRejected event)

@@ -16,10 +16,8 @@
 """
 This module provides a data client for backtesting.
 """
-
-from libc.stdint cimport uint64_t
-
 from nautilus_trader.common.config import NautilusConfig
+from nautilus_trader.core.uuid import UUID4
 
 from nautilus_trader.backtest.models cimport SpreadQuoteAggregator
 from nautilus_trader.cache.cache cimport Cache
@@ -267,6 +265,19 @@ cdef class BacktestMarketDataClient(MarketDataClient):
         self._add_subscription_order_book_snapshots(command.instrument_id)
         # Do nothing else for backtest
 
+    cpdef void subscribe_order_book_depth(self, SubscribeOrderBook command):
+        Condition.not_none(command.instrument_id, "instrument_id")
+
+        if not self._cache.instrument(command.instrument_id):
+            self._log.error(
+                f"Cannot find instrument {command.instrument_id} to subscribe for `OrderBookDepth10` data, "
+                "No data has been loaded for this instrument",
+            )
+            return
+
+        self._add_subscription_order_book_snapshots(command.instrument_id)
+        self._msgbus.send(endpoint="BacktestEngine.execute", msg=command)
+
     cpdef void subscribe_quote_ticks(self, SubscribeQuoteTicks command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
@@ -379,6 +390,12 @@ cdef class BacktestMarketDataClient(MarketDataClient):
         # Do nothing else for backtest
 
     cpdef void unsubscribe_order_book_snapshots(self, UnsubscribeOrderBook command):
+        Condition.not_none(command.instrument_id, "instrument_id")
+
+        self._remove_subscription_order_book_snapshots(command.instrument_id)
+        # Do nothing else for backtest
+
+    cpdef void unsubscribe_order_book_depth(self, UnsubscribeOrderBook command):
         Condition.not_none(command.instrument_id, "instrument_id")
 
         self._remove_subscription_order_book_snapshots(command.instrument_id)
@@ -576,9 +593,10 @@ cdef class BacktestMarketDataClient(MarketDataClient):
                 instrument_id=component_id,
                 client_id=command.client_id,
                 venue=command.venue,
-                command_id=command.id,
+                command_id=UUID4(),
                 ts_init=command.ts_init,
                 params=command.params,
+                correlation_id=command.id,
             )
 
             # Send command to message bus for normal treatment

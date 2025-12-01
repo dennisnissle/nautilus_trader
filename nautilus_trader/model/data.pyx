@@ -166,6 +166,48 @@ from nautilus_trader.model.objects cimport price_new
 from nautilus_trader.model.objects cimport quantity_new
 
 
+_SUPPORTED_BAR_AGGREGATIONS = (
+    BarAggregation.MILLISECOND,
+    BarAggregation.SECOND,
+    BarAggregation.MINUTE,
+    BarAggregation.HOUR,
+    BarAggregation.DAY,
+    BarAggregation.WEEK,
+    BarAggregation.MONTH,
+    BarAggregation.YEAR,
+    BarAggregation.TICK,
+    BarAggregation.TICK_IMBALANCE,
+    BarAggregation.TICK_RUNS,
+    BarAggregation.VOLUME,
+    BarAggregation.VOLUME_IMBALANCE,
+    BarAggregation.VOLUME_RUNS,
+    BarAggregation.VALUE,
+    BarAggregation.VALUE_IMBALANCE,
+    BarAggregation.VALUE_RUNS,
+    BarAggregation.RENKO,
+)
+
+
+cpdef str supported_bar_aggregations_str():
+    cdef list[str] names = []
+
+    # Using an imperative for loop here as closures not supported in cpdef
+    cdef BarAggregation aggregation
+    for aggregation in _SUPPORTED_BAR_AGGREGATIONS:
+        names.append(bar_aggregation_to_str(aggregation))
+
+    return ", ".join(names)
+
+
+cpdef str bar_aggregation_not_implemented_message(BarAggregation aggregation):
+    agg_str = bar_aggregation_to_str(aggregation)
+    supported = supported_bar_aggregations_str()
+    return (
+        f"BarAggregation.{agg_str} is not currently implemented. "
+        f"Supported aggregations are: {supported}."
+    )
+
+
 cdef inline BookOrder order_from_mem_c(BookOrder_t mem):
     cdef BookOrder order = BookOrder.__new__(BookOrder)
     order._mem = mem
@@ -491,6 +533,8 @@ cdef class BarSpecification:
         return cstr_to_pystr(bar_specification_to_cstr(&self._mem))
 
     def __eq__(self, BarSpecification other) -> bool:
+        if other is None:
+            return False
         return bar_specification_eq(&self._mem, &other._mem)
 
     def __lt__(self, BarSpecification other) -> bool:
@@ -566,9 +610,6 @@ cdef class BarSpecification:
             Raises
             ------
             ValueError
-                If the aggregation is MONTH or YEAR (since months and years have variable
-                lengths 28-31 days or 365-366 days, making fixed nanosecond conversion
-                impossible).
                 If the aggregation is not a time-based aggregation.
 
             Notes
@@ -576,9 +617,7 @@ cdef class BarSpecification:
             Only time-based aggregations can be converted to nanosecond intervals.
             Threshold-based and information-based aggregations will raise a ValueError.
 
-            Month or year intervals require special handling due to their variable length,
-            which cannot be expressed as a fixed number of nanoseconds. DateOffset is used
-            instead for these aggregations.
+            Month or year intervals use proxy values to estimate their respective durations.
 
             Examples
             --------
@@ -594,27 +633,17 @@ cdef class BarSpecification:
             elif aggregation is BarAggregation.SECOND:
                 return secs_to_nanos(step)
             elif aggregation is BarAggregation.MINUTE:
-                return secs_to_nanos(step) * 60
+                return step * secs_to_nanos(60)
             elif aggregation is BarAggregation.HOUR:
-                return secs_to_nanos(step) * 60 * 60
+                return step * secs_to_nanos(60 * 60)
             elif aggregation is BarAggregation.DAY:
-                return secs_to_nanos(step) * 60 * 60 * 24
+                return step * secs_to_nanos(60 * 60 * 24)
             elif aggregation is BarAggregation.WEEK:
-                return secs_to_nanos(step) * 60 * 60 * 24 * 7
+                return step * secs_to_nanos(60 * 60 * 24 * 7)
             elif aggregation is BarAggregation.MONTH:
-                # Not actually used for the aggregation. DateOffset are used instead
-                # given the fact, the lengths of the months differs.
-                raise ValueError(
-                    f"get_interval_ns not supported for the `BarAggregation.MONTH` aggregation "
-                    f"`DateOffset` is used instead."
-                )
+                return step * secs_to_nanos(60 * 60 * 24 * 30) # Proxy for comparing bar lengths
             elif aggregation is BarAggregation.YEAR:
-                # Not actually used for the aggregation. DateOffset are used instead
-                # given the fact, the lengths of the years differs (leap years).
-                raise ValueError(
-                    f"get_interval_ns not supported for the `BarAggregation.YEAR` aggregation "
-                    f"`DateOffset` is used instead."
-                )
+                return step * secs_to_nanos(60 * 60 * 24 * 365) # Proxy for comparing bar lengths
             else:
                 # Design time error
                 raise ValueError(
@@ -907,74 +936,74 @@ cdef class BarSpecification:
         return BarSpecification.check_information_aggregated_c(aggregation)
 
     cpdef bint is_time_aggregated(self):
-        """
-        Return a value indicating whether the aggregation method is time-driven.
+            """
+            Return a value indicating whether the aggregation method is time-driven.
 
-        Time-based aggregation creates bars at fixed time intervals based on calendar
-        or clock time, providing consistent temporal sampling of market data. Each bar
-        covers a specific time period regardless of trading activity level.
+            Time-based aggregation creates bars at fixed time intervals based on calendar
+            or clock time, providing consistent temporal sampling of market data. Each bar
+            covers a specific time period regardless of trading activity level.
 
-        Time-based aggregation types supported:
-        - ``MILLISECOND``: Fixed millisecond intervals (high-frequency sampling)
-        - ``SECOND``: Fixed second intervals (short-term patterns)
-        - ``MINUTE``: Fixed minute intervals (most common for retail trading)
-        - ``HOUR``: Fixed hour intervals (intraday analysis)
-        - ``DAY``: Fixed daily intervals (daily charts, longer-term analysis)
-        - ``WEEK``: Fixed weekly intervals (weekly patterns, medium-term trends)
-        - ``MONTH``: Fixed monthly intervals (long-term analysis, seasonal patterns)
-        - ``YEAR``: Fixed yearly intervals (annual trends, long-term investment)
+            Time-based aggregation types supported:
+            - ``MILLISECOND``: Fixed millisecond intervals (high-frequency sampling)
+            - ``SECOND``: Fixed second intervals (short-term patterns)
+            - ``MINUTE``: Fixed minute intervals (most common for retail trading)
+            - ``HOUR``: Fixed hour intervals (intraday analysis)
+            - ``DAY``: Fixed daily intervals (daily charts, longer-term analysis)
+            - ``WEEK``: Fixed weekly intervals (weekly patterns, medium-term trends)
+            - ``MONTH``: Fixed monthly intervals (long-term analysis, seasonal patterns)
+            - ``YEAR``: Fixed yearly intervals (annual trends, long-term investment)
 
-        Time-based bars are ideal for:
-        - Regular time-series analysis and charting
-        - Consistent temporal sampling across different market conditions
-        - Traditional technical analysis and pattern recognition
-        - Comparing market behavior across fixed time periods
+            Time-based bars are ideal for:
+            - Regular time-series analysis and charting
+            - Consistent temporal sampling across different market conditions
+            - Traditional technical analysis and pattern recognition
+            - Comparing market behavior across fixed time periods
 
-        This differs from threshold aggregation (volume/tick-based) which creates
-        bars when activity levels are reached, and information aggregation which
-        creates bars based on market microstructure patterns.
+            This differs from threshold aggregation (volume/tick-based) which creates
+            bars when activity levels are reached, and information aggregation which
+            creates bars based on market microstructure patterns.
 
-        Returns
-        -------
-        bool
-            True if the aggregation method is time-based, else False.
+            Returns
+            -------
+            bool
+                True if the aggregation method is time-based, else False.
 
-        See Also
-        --------
-        is_threshold_aggregated : Check for threshold-based aggregation
-        is_information_aggregated : Check for information-based aggregation
+            See Also
+            --------
+            is_threshold_aggregated : Check for threshold-based aggregation
+            is_information_aggregated : Check for information-based aggregation
 
-        Examples
-        --------
-        Create a 5-minute bar specification using last price:
+            Examples
+            --------
+            Create a 5-minute bar specification using last price:
 
-        >>> spec = BarSpecification(5, BarAggregation.MINUTE, PriceType.LAST)
-        >>> str(spec)
-        '5-MINUTE-LAST'
+            >>> spec = BarSpecification(5, BarAggregation.MINUTE, PriceType.LAST)
+            >>> str(spec)
+            '5-MINUTE-LAST'
 
-        Create a tick bar specification:
+            Create a tick bar specification:
 
-        >>> spec = BarSpecification(1000, BarAggregation.TICK, PriceType.MID)
-        >>> str(spec)
-        '1000-TICK-MID'
+            >>> spec = BarSpecification(1000, BarAggregation.TICK, PriceType.MID)
+            >>> str(spec)
+            '1000-TICK-MID'
 
-        Parse from string:
+            Parse from string:
 
-        >>> spec = BarSpecification.from_str("15-MINUTE-BID")
-        >>> spec.step
-        15
-        >>> spec.aggregation
-        BarAggregation.MINUTE
+            >>> spec = BarSpecification.from_str("15-MINUTE-BID")
+            >>> spec.step
+            15
+            >>> spec.aggregation
+            BarAggregation.MINUTE
 
-        Check aggregation type:
+            Check aggregation type:
 
-        >>> spec = BarSpecification(1, BarAggregation.HOUR, PriceType.LAST)
-        >>> spec.is_time_aggregated()
-        True
-        >>> spec.is_threshold_aggregated()
-        False
-        """
-        return BarSpecification.check_time_aggregated_c(self.aggregation)
+            >>> spec = BarSpecification(1, BarAggregation.HOUR, PriceType.LAST)
+            >>> spec.is_time_aggregated()
+            True
+            >>> spec.is_threshold_aggregated()
+            False
+            """
+            return BarSpecification.check_time_aggregated_c(self.aggregation)
 
     cpdef bint is_threshold_aggregated(self):
         """
@@ -1191,6 +1220,8 @@ cdef class BarType:
         return cstr_to_pystr(bar_type_to_cstr(&self._mem))
 
     def __eq__(self, BarType other) -> bool:
+        if other is None:
+            return False
         return self.to_str() == other.to_str()
 
     def __lt__(self, BarType other) -> bool:
@@ -1506,6 +1537,8 @@ cdef class Bar(Data):
             )
 
     def __eq__(self, Bar other) -> bool:
+        if other is None:
+            return False
         return self.to_str() == other.to_str()
 
     def __hash__(self) -> int:
@@ -1984,6 +2017,8 @@ cdef class DataType:
         self._hash = hash((self.type, self._key))  # Assign hash for improved time complexity
 
     def __eq__(self, DataType other) -> bool:
+        if other is None:
+            return False
         return self.type == other.type and self._key == other._key  # noqa
 
     def __lt__(self, DataType other) -> bool:
@@ -2118,6 +2153,8 @@ cdef class BookOrder:
         )
 
     def __eq__(self, BookOrder other) -> bool:
+        if other is None:
+            return False
         return book_order_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -2415,6 +2452,8 @@ cdef class OrderBookDelta(Data):
         )
 
     def __eq__(self, OrderBookDelta other) -> bool:
+        if other is None:
+            return False
         return orderbook_delta_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -3023,6 +3062,8 @@ cdef class OrderBookDeltas(Data):
             orderbook_deltas_drop(self._mem)
 
     def __eq__(self, OrderBookDeltas other) -> bool:
+        if other is None:
+            return False
         return OrderBookDeltas.to_dict_c(self) == OrderBookDeltas.to_dict_c(other)
 
     def __hash__(self) -> int:
@@ -3417,6 +3458,8 @@ cdef class OrderBookDepth10(Data):
             PyMem_Free(ask_counts_array)
 
     def __eq__(self, OrderBookDepth10 other) -> bool:
+        if other is None:
+            return False
         return orderbook_depth10_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -3489,6 +3532,45 @@ cdef class OrderBookDepth10(Data):
             asks.append(order)
 
         return asks
+
+    cpdef QuoteTick to_quote_tick(self):
+        """
+        Return a `QuoteTick` created from the top of book levels.
+
+        Returns ``None`` when the top-of-book bid or ask is missing or invalid
+        (NULL order or zero size).
+
+        Returns
+        -------
+        QuoteTick or ``None``
+
+        """
+        cdef list[BookOrder] bids = self.bids
+        cdef list[BookOrder] asks = self.asks
+
+        if not bids or not asks:
+            return None
+
+        cdef BookOrder top_bid = bids[0]
+        cdef BookOrder top_ask = asks[0]
+
+        if (
+            top_bid.side == OrderSide.NO_ORDER_SIDE or
+            top_ask.side == OrderSide.NO_ORDER_SIDE or
+            top_bid._mem.size.raw == 0 or
+            top_ask._mem.size.raw == 0
+        ):
+            return None
+
+        return QuoteTick(
+            instrument_id=self.instrument_id,
+            bid_price=top_bid.price,
+            ask_price=top_ask.price,
+            bid_size=top_bid.size,
+            ask_size=top_ask.size,
+            ts_event=self.ts_event,
+            ts_init=self.ts_init,
+        )
 
     @property
     def bid_counts(self) -> list[uint32_t]:
@@ -3787,6 +3869,8 @@ cdef class InstrumentStatus(Data):
         self._is_short_sell_restricted = is_short_sell_restricted
 
     def __eq__(self, InstrumentStatus other) -> bool:
+        if other is None:
+            return False
         return InstrumentStatus.to_dict_c(self) == InstrumentStatus.to_dict_c(other)
 
     def __hash__(self) -> int:
@@ -4006,6 +4090,8 @@ cdef class InstrumentClose(Data):
         self.ts_init = ts_init
 
     def __eq__(self, InstrumentClose other) -> bool:
+        if other is None:
+            return False
         return InstrumentClose.to_dict_c(self) == InstrumentClose.to_dict_c(other)
 
     def __hash__(self) -> int:
@@ -4259,6 +4345,8 @@ cdef class QuoteTick(Data):
         )
 
     def __eq__(self, QuoteTick other) -> bool:
+        if other is None:
+            return False
         return quote_tick_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -4880,6 +4968,8 @@ cdef class TradeTick(Data):
         )
 
     def __eq__(self, TradeTick other) -> bool:
+        if other is None:
+            return False
         return trade_tick_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -5379,6 +5469,8 @@ cdef class MarkPriceUpdate(Data):
         )
 
     def __eq__(self, MarkPriceUpdate other) -> bool:
+        if other is None:
+            return False
         return mark_price_update_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -5620,6 +5712,8 @@ cdef class IndexPriceUpdate(Data):
         )
 
     def __eq__(self, IndexPriceUpdate other) -> bool:
+        if other is None:
+            return False
         return index_price_update_eq(&self._mem, &other._mem)
 
     def __hash__(self) -> int:
@@ -5864,6 +5958,8 @@ cdef class FundingRateUpdate(Data):
         self._ts_init = ts_init
 
     def __eq__(self, FundingRateUpdate other) -> bool:
+        if other is None:
+            return False
         return (
             self.instrument_id == other.instrument_id
             and self.rate == other.rate

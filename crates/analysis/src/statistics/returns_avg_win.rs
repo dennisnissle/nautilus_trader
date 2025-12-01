@@ -13,21 +13,31 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use std::fmt::Display;
+
+use nautilus_model::position::Position;
+
 use crate::{Returns, statistic::PortfolioStatistic};
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis")
 )]
 pub struct ReturnsAverageWin {}
 
+impl Display for ReturnsAverageWin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Average Win (Return)")
+    }
+}
+
 impl PortfolioStatistic for ReturnsAverageWin {
     type Item = f64;
 
     fn name(&self) -> String {
-        stringify!(ReturnsAverageWin).to_string()
+        self.to_string()
     }
 
     fn calculate_from_returns(&self, returns: &Returns) -> Option<Self::Item> {
@@ -35,18 +45,29 @@ impl PortfolioStatistic for ReturnsAverageWin {
             return Some(f64::NAN);
         }
 
-        let negative_returns: Vec<f64> = returns.values().copied().filter(|&x| x > 0.0).collect();
+        let positive_returns: Vec<f64> = returns.values().copied().filter(|&x| x > 0.0).collect();
 
-        if negative_returns.is_empty() {
+        if positive_returns.is_empty() {
             return Some(f64::NAN);
         }
 
-        let sum: f64 = negative_returns.iter().sum();
-        let count = negative_returns.len() as f64;
+        let sum: f64 = positive_returns.iter().sum();
+        let count = positive_returns.len() as f64;
 
         Some(sum / count)
     }
+    fn calculate_from_realized_pnls(&self, _realized_pnls: &[f64]) -> Option<Self::Item> {
+        None
+    }
+
+    fn calculate_from_positions(&self, _positions: &[Position]) -> Option<Self::Item> {
+        None
+    }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -106,6 +127,6 @@ mod tests {
     #[rstest]
     fn test_name() {
         let avg_win = ReturnsAverageWin {};
-        assert_eq!(avg_win.name(), "ReturnsAverageWin");
+        assert_eq!(avg_win.name(), "Average Win (Return)");
     }
 }

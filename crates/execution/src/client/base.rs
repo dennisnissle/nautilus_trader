@@ -21,15 +21,17 @@
 
 use std::{any::Any, cell::RefCell, fmt::Debug, rc::Rc};
 
-use nautilus_common::{cache::Cache, clock::Clock, msgbus};
+use nautilus_common::{
+    cache::Cache, clock::Clock, msgbus, msgbus::switchboard::MessagingSwitchboard,
+};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     accounts::AccountAny,
     enums::{AccountType, LiquiditySide, OmsType, OrderSide, OrderType},
     events::{
-        AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
-        OrderExpired, OrderFilled, OrderModifyRejected, OrderRejected, OrderSubmitted,
-        OrderTriggered, OrderUpdated,
+        AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderDenied,
+        OrderEventAny, OrderExpired, OrderFilled, OrderModifyRejected, OrderRejected,
+        OrderSubmitted, OrderTriggered, OrderUpdated,
     },
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
@@ -45,7 +47,8 @@ use nautilus_model::{
 /// account state generation, order event creation, and message routing.
 /// Execution clients can inherit this base functionality and extend it
 /// with venue-specific implementations.
-pub struct BaseExecutionClient {
+#[derive(Clone)]
+pub struct ExecutionClientCore {
     pub trader_id: TraderId,
     pub client_id: ClientId,
     pub venue: Venue,
@@ -58,16 +61,16 @@ pub struct BaseExecutionClient {
     cache: Rc<RefCell<Cache>>,
 }
 
-impl Debug for BaseExecutionClient {
+impl Debug for ExecutionClientCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct(stringify!(BaseExecutionClient))
+        f.debug_struct(stringify!(ExecutionClientCore))
             .field("client_id", &self.client_id)
             .finish()
     }
 }
 
-impl BaseExecutionClient {
-    /// Creates a new [`BaseExecutionClient`] instance.
+impl ExecutionClientCore {
+    /// Creates a new [`ExecutionClientCore`] instance.
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         trader_id: TraderId,
@@ -104,8 +107,20 @@ impl BaseExecutionClient {
         self.account_id = account_id;
     }
 
+    /// Returns a reference to the clock.
     #[must_use]
+    pub const fn clock(&self) -> &Rc<RefCell<dyn Clock>> {
+        &self.clock
+    }
+
+    /// Returns a reference to the cache.
+    #[must_use]
+    pub const fn cache(&self) -> &Rc<RefCell<Cache>> {
+        &self.cache
+    }
+
     /// Returns the account associated with this execution client.
+    #[must_use]
     pub fn get_account(&self) -> Option<AccountAny> {
         self.cache.borrow().account(&self.account_id).cloned()
     }
@@ -136,6 +151,27 @@ impl BaseExecutionClient {
         );
         self.send_account_state(account_state);
         Ok(())
+    }
+
+    pub fn generate_order_denied(
+        &self,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        reason: &str,
+        ts_event: UnixNanos,
+    ) {
+        let event = OrderDenied::new(
+            self.trader_id,
+            strategy_id,
+            instrument_id,
+            client_order_id,
+            reason.into(),
+            UUID4::new(),
+            ts_event,
+            self.clock.borrow().timestamp_ns(),
+        );
+        self.send_order_event(OrderEventAny::Denied(event));
     }
 
     pub fn generate_order_submitted(
@@ -266,6 +302,7 @@ impl BaseExecutionClient {
         quantity: Quantity,
         price: Price,
         trigger_price: Option<Price>,
+        protection_price: Option<Price>,
         ts_event: UnixNanos,
         venue_order_id_modified: bool,
     ) {
@@ -295,6 +332,7 @@ impl BaseExecutionClient {
             Some(self.account_id),
             Some(price),
             trigger_price,
+            protection_price,
         );
 
         self.send_order_event(OrderEventAny::Updated(event));
@@ -416,32 +454,32 @@ impl BaseExecutionClient {
     }
 
     fn send_account_state(&self, account_state: AccountState) {
-        let endpoint = "Portfolio.update_account".into();
+        let endpoint = MessagingSwitchboard::portfolio_update_account();
         msgbus::send_any(endpoint, &account_state as &dyn Any);
     }
 
     fn send_order_event(&self, event: OrderEventAny) {
-        let endpoint = "ExecEngine.process".into();
+        let endpoint = MessagingSwitchboard::exec_engine_process();
         msgbus::send_any(endpoint, &event as &dyn Any);
     }
 
     fn send_mass_status_report(&self, report: ExecutionMassStatus) {
-        let endpoint = "ExecEngine.reconcile_execution_mass_status".into();
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_mass_status();
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_order_status_report(&self, report: OrderStatusReport) {
-        let endpoint = "ExecEngine.reconcile_execution_report".into();
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_fill_report(&self, report: FillReport) {
-        let endpoint = "ExecEngine.reconcile_execution_report".into();
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_position_report(&self, report: PositionStatusReport) {
-        let endpoint = "ExecEngine.reconcile_execution_report".into();
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 }

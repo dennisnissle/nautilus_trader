@@ -13,28 +13,48 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use std::fmt::Display;
+
+use nautilus_model::position::Position;
+
 use crate::{Returns, statistic::PortfolioStatistic};
 
 /// Calculates the profit factor based on portfolio returns.
 ///
 /// Profit factor is defined as the ratio of gross profits to gross losses:
-/// |Total Positive Returns| / |Total Negative Returns|
+/// `Sum(Positive Returns) / Abs(Sum(Negative Returns))`
 ///
 /// A profit factor greater than 1.0 indicates a profitable strategy, while
 /// a factor less than 1.0 indicates losses exceed gains.
+///
+/// Generally:
+/// - 1.0-1.5: Modest profitability
+/// - 1.5-2.0: Good profitability
+/// - > 2.0: Excellent profitability
+///
+/// # References
+///
+/// - Tharp, V. K. (1998). *Trade Your Way to Financial Freedom*. McGraw-Hill.
+/// - Kaufman, P. J. (2013). *Trading Systems and Methods* (5th ed.). Wiley.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.analysis")
 )]
 pub struct ProfitFactor {}
 
+impl Display for ProfitFactor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Profit Factor")
+    }
+}
+
 impl PortfolioStatistic for ProfitFactor {
     type Item = f64;
 
     fn name(&self) -> String {
-        stringify!(ProfitFactor).to_string()
+        self.to_string()
     }
 
     fn calculate_from_returns(&self, returns: &Returns) -> Option<Self::Item> {
@@ -42,14 +62,17 @@ impl PortfolioStatistic for ProfitFactor {
             return Some(f64::NAN);
         }
 
+        // Zero returns are excluded from both sums (neither profit nor loss)
         let (positive_returns_sum, negative_returns_sum) =
             returns
                 .values()
                 .fold((0.0, 0.0), |(pos_sum, neg_sum), &pnl| {
-                    if pnl >= 0.0 {
+                    if pnl > 0.0 {
                         (pos_sum + pnl, neg_sum)
-                    } else {
+                    } else if pnl < 0.0 {
                         (pos_sum, neg_sum + pnl)
+                    } else {
+                        (pos_sum, neg_sum)
                     }
                 });
 
@@ -58,7 +81,18 @@ impl PortfolioStatistic for ProfitFactor {
         }
         Some((positive_returns_sum / negative_returns_sum).abs())
     }
+    fn calculate_from_realized_pnls(&self, _realized_pnls: &[f64]) -> Option<Self::Item> {
+        None
+    }
+
+    fn calculate_from_positions(&self, _positions: &[Position]) -> Option<Self::Item> {
+        None
+    }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod profit_factor_tests {
@@ -126,7 +160,7 @@ mod profit_factor_tests {
         let returns = create_returns(vec![10.0, 0.0, -20.0, -30.0]);
         let result = profit_factor.calculate_from_returns(&returns);
         assert!(result.is_some());
-        // (10.0 + 0.0) / |-20.0 + -30.0| = 10 / 50 = 0.2
+        // Zero excluded: 10.0 / |-20.0 + -30.0| = 10 / 50 = 0.2
         assert!(approx_eq!(f64, result.unwrap(), 0.2, epsilon = 1e-9));
     }
 
@@ -142,6 +176,6 @@ mod profit_factor_tests {
     #[rstest]
     fn test_name() {
         let profit_factor = ProfitFactor {};
-        assert_eq!(profit_factor.name(), "ProfitFactor");
+        assert_eq!(profit_factor.name(), "Profit Factor");
     }
 }

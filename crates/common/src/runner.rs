@@ -22,7 +22,7 @@
 use std::{cell::OnceCell, fmt::Debug, sync::Arc};
 
 use crate::{
-    messages::{DataEvent, data::DataCommand},
+    messages::{data::DataCommand, execution::TradingCommand},
     msgbus::{self, switchboard::MessagingSwitchboard},
     timer::TimeEventHandlerV2,
 };
@@ -123,39 +123,48 @@ pub fn set_time_event_sender(sender: Arc<dyn TimeEventSender>) {
     });
 }
 
-/// Gets the global data event sender.
+/// Trait for trading command sending that can be implemented for both sync and async runners.
+pub trait TradingCommandSender {
+    /// Executes a trading command.
+    ///
+    /// - **Sync runners** send the command to a queue for synchronous execution.
+    /// - **Async runners** send the command to a channel for asynchronous execution.
+    fn execute(&self, command: TradingCommand);
+}
+
+/// Gets the global trading command sender.
 ///
 /// # Panics
 ///
 /// Panics if the sender is uninitialized.
 #[must_use]
-pub fn get_data_event_sender() -> tokio::sync::mpsc::UnboundedSender<DataEvent> {
-    DATA_EVENT_SENDER.with(|sender| {
+pub fn get_trading_cmd_sender() -> Arc<dyn TradingCommandSender> {
+    EXEC_CMD_SENDER.with(|sender| {
         sender
             .get()
-            .expect("Data event sender should be initialized by runner")
+            .expect("Trading command sender should be initialized by runner")
             .clone()
     })
 }
 
-/// Sets the global data event sender.
+/// Sets the global trading command sender.
 ///
+/// This should be called by the runner when it initializes.
 /// Can only be called once per thread.
 ///
 /// # Panics
 ///
 /// Panics if a sender has already been set.
-pub fn set_data_event_sender(sender: tokio::sync::mpsc::UnboundedSender<DataEvent>) {
-    DATA_EVENT_SENDER.with(|s| {
+pub fn set_exec_cmd_sender(sender: Arc<dyn TradingCommandSender>) {
+    EXEC_CMD_SENDER.with(|s| {
         if s.set(sender).is_err() {
-            panic!("Data event sender can only be set once");
+            panic!("Trading command sender can only be set once");
         }
     });
 }
 
-// TODO: We can refine this for the synch runner later, data event sender won't be required
 thread_local! {
     static TIME_EVENT_SENDER: OnceCell<Arc<dyn TimeEventSender>> = const { OnceCell::new() };
-    static DATA_EVENT_SENDER: OnceCell<tokio::sync::mpsc::UnboundedSender<DataEvent>> = const { OnceCell::new() };
     static DATA_CMD_SENDER: OnceCell<Arc<dyn DataCommandSender>> = const { OnceCell::new() };
+    static EXEC_CMD_SENDER: OnceCell<Arc<dyn TradingCommandSender>> = const { OnceCell::new() };
 }

@@ -20,10 +20,10 @@ from nautilus_trader.adapters.binance import BINANCE
 from nautilus_trader.adapters.binance import BinanceAccountType
 from nautilus_trader.adapters.binance import BinanceDataClientConfig
 from nautilus_trader.adapters.binance import BinanceExecClientConfig
+from nautilus_trader.adapters.binance import BinanceInstrumentProviderConfig
 from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
 from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
 from nautilus_trader.config import CacheConfig
-from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveDataEngineConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -39,6 +39,10 @@ from nautilus_trader.test_kit.strategies.tester_exec import ExecTesterConfig
 # *** THIS IS A TEST STRATEGY WITH NO ALPHA ADVANTAGE WHATSOEVER. ***
 # *** IT IS NOT INTENDED TO BE USED TO TRADE LIVE WITH REAL MONEY. ***
 
+# Strategy config params
+symbol = "ETHUSDT-PERP"
+instrument_id = InstrumentId.from_str(f"{symbol}.{BINANCE}")
+order_qty = Decimal("0.02")
 
 # Configure the trading node
 config_node = TradingNodeConfig(
@@ -94,7 +98,10 @@ config_node = TradingNodeConfig(
             base_url_ws=None,  # Override with custom endpoint
             us=False,  # If client is for Binance US
             testnet=True,  # If client uses the testnet
-            instrument_provider=InstrumentProviderConfig(load_all=True),
+            instrument_provider=BinanceInstrumentProviderConfig(
+                load_ids=frozenset([instrument_id]),
+                query_commission_rates=True,
+            ),
         ),
     },
     exec_clients={
@@ -106,10 +113,11 @@ config_node = TradingNodeConfig(
             base_url_ws=None,  # Override with custom endpoint
             us=False,  # If client is for Binance US
             testnet=True,  # If client uses the testnet
-            instrument_provider=InstrumentProviderConfig(load_all=True),
+            instrument_provider=BinanceInstrumentProviderConfig(
+                load_ids=frozenset([instrument_id]),
+                query_commission_rates=True,
+            ),
             max_retries=3,
-            retry_delay_initial_ms=1_000,
-            retry_delay_max_ms=10_000,
             log_rejected_due_post_only_as_warning=False,
         ),
     },
@@ -123,22 +131,26 @@ config_node = TradingNodeConfig(
 # Instantiate the node with a configuration
 node = TradingNode(config=config_node)
 
-order_qty = Decimal("0.020")
-
 # Configure your strategy
 strat_config = ExecTesterConfig(
-    instrument_id=InstrumentId.from_str("ETHUSDT-PERP.BINANCE"),
-    external_order_claims=[InstrumentId.from_str("ETHUSDT-PERP.BINANCE")],
+    instrument_id=instrument_id,
+    external_order_claims=[instrument_id],
+    # subscribe_book=True,
+    subscribe_quotes=True,
+    subscribe_trades=True,
     order_qty=order_qty,
-    # open_position_on_start_qty=order_qty,
+    # order_params={"price_match": "QUEUE_5"},
+    # enable_limit_buys=False,
+    # enable_limit_sells=False,
+    open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,
     # use_individual_cancels_on_stop=True,
     use_post_only=True,
     # close_positions_on_stop=False,
+    # log_rejected_due_post_only_as_warning=False,
+    # test_reject_post_only=True,
     log_data=False,
-    log_rejected_due_post_only_as_warning=False,
-    test_reject_post_only=False,
 )
 
 # Instantiate your strategy

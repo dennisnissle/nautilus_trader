@@ -13,8 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::collections::HashMap;
-
 use ahash::AHashMap;
 use nautilus_common::{custom::CustomData, signal::Signal};
 use nautilus_model::{
@@ -86,12 +84,12 @@ impl DatabaseQueries {
     /// # Errors
     ///
     /// Returns an error if the SELECT operation fails.
-    pub async fn load(pool: &PgPool) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+    pub async fn load(pool: &PgPool) -> anyhow::Result<AHashMap<String, Vec<u8>>> {
         sqlx::query_as::<_, GeneralRow>("SELECT * FROM general")
             .fetch_all(pool)
             .await
             .map(|rows| {
-                let mut cache: HashMap<String, Vec<u8>> = HashMap::new();
+                let mut cache: AHashMap<String, Vec<u8>> = AHashMap::new();
                 for row in rows {
                     cache.insert(row.id, row.value);
                 }
@@ -208,7 +206,7 @@ impl DatabaseQueries {
             .execute(pool)
             .await
             .map(|_| ())
-            .map_err(|e| anyhow::anyhow!(format!("Failed to insert item {} into instrument table: {:?}", instrument.id().to_string(), e)))
+            .map_err(|e| anyhow::anyhow!("Failed to insert item {} into instrument table: {:?}", instrument.id(), e))
     }
 
     /// Loads a single `InstrumentAny` entry by `instrument_id` via the provided `pool`.
@@ -1168,7 +1166,7 @@ impl DatabaseQueries {
         "#,
         )
         .bind(signal.name.to_string())
-        .bind(signal.value.to_string())
+        .bind(signal.value.clone())
         .bind(signal.ts_event.to_string())
         .bind(signal.ts_init.to_string())
         .execute(pool)

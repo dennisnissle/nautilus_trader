@@ -13,13 +13,15 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+#![cfg(feature = "live")]
+
 use bytes::Bytes;
 use futures::pin_mut;
 use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyruntime_err};
 use pyo3::prelude::*;
 use ustr::Ustr;
 
-use crate::msgbus::listener::MessageBusListener;
+use crate::live::listener::MessageBusListener;
 
 #[pymethods]
 impl MessageBusListener {
@@ -40,12 +42,12 @@ impl MessageBusListener {
 
     #[pyo3(name = "close")]
     fn py_close(&mut self) {
-        self.close()
+        self.close();
     }
 
     #[pyo3(name = "publish")]
     fn py_publish(&self, topic: String, payload: Vec<u8>) {
-        self.publish(Ustr::from(&topic), Bytes::from(payload))
+        self.publish(Ustr::from(&topic), Bytes::from(payload));
     }
 
     #[pyo3(name = "stream")]

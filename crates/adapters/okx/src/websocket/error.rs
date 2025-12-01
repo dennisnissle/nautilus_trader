@@ -13,6 +13,8 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Error types produced by the OKX WebSocket client implementation.
+
 use thiserror::Error;
 use tokio_tungstenite::tungstenite;
 
@@ -29,6 +31,8 @@ pub enum OKXWsError {
     JsonError(String),
     #[error("Client error: {0}")]
     ClientError(String),
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
     /// Wrapping the underlying HttpClientError from the network crate.
     // #[error("Network error: {0}")]
     // WebSocketClientError(WebSocketClientError),  // TODO: Implement Debug
@@ -40,5 +44,11 @@ pub enum OKXWsError {
 impl From<tungstenite::Error> for OKXWsError {
     fn from(error: tungstenite::Error) -> Self {
         Self::TungsteniteError(error.to_string())
+    }
+}
+
+impl From<String> for OKXWsError {
+    fn from(msg: String) -> Self {
+        Self::AuthenticationError(msg)
     }
 }

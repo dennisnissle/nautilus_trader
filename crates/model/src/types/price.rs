@@ -127,7 +127,7 @@ pub const ERROR_PRICE: Price = Price {
 #[derive(Clone, Copy, Default, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", frozen)
 )]
 pub struct Price {
     /// Represents the raw fixed-point value, with `precision` defining the number of decimal places.
@@ -298,7 +298,7 @@ impl Price {
         // Scale down the raw value to match the precision
         let precision_diff = FIXED_PRECISION.saturating_sub(self.precision);
         let rescaled_raw = self.raw / PriceRaw::pow(10, u32::from(precision_diff));
-        #[allow(clippy::unnecessary_cast)] // Required for precision modes
+        #[allow(clippy::unnecessary_cast)]
         Decimal::from_i128_with_scale(rescaled_raw as i128, u32::from(self.precision))
     }
 
@@ -312,6 +312,7 @@ impl Price {
     ///
     /// This method provides more reliable parsing by using Decimal arithmetic
     /// to avoid floating-point precision issues during conversion.
+    /// The value is rounded to the specified precision using banker's rounding (round half to even).
     ///
     /// # Errors
     ///
@@ -319,7 +320,7 @@ impl Price {
     /// - `precision` exceeds [`FIXED_PRECISION`].
     /// - The decimal value cannot be converted to the raw representation.
     /// - Overflow occurs during scaling.
-    pub fn from_decimal(decimal: Decimal, precision: u8) -> anyhow::Result<Self> {
+    pub fn from_decimal_dp(decimal: Decimal, precision: u8) -> anyhow::Result<Self> {
         check_fixed_precision(precision)?;
 
         // Scale the decimal to the target precision
@@ -348,6 +349,22 @@ impl Price {
 
         Ok(Self { raw, precision })
     }
+
+    /// Creates a new [`Price`] from a [`Decimal`] value with precision inferred from the decimal's scale.
+    ///
+    /// The precision is determined by the scale of the decimal (number of decimal places).
+    /// The value is rounded to the inferred precision using banker's rounding (round half to even).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The inferred precision exceeds [`FIXED_PRECISION`].
+    /// - The decimal value cannot be converted to the raw representation.
+    /// - Overflow occurs during scaling.
+    pub fn from_decimal(decimal: Decimal) -> anyhow::Result<Self> {
+        let precision = decimal.scale() as u8;
+        Self::from_decimal_dp(decimal, precision)
+    }
 }
 
 impl FromStr for Price {
@@ -373,7 +390,7 @@ impl FromStr for Price {
             0
         };
 
-        Self::from_decimal(decimal, precision).map_err(|e| e.to_string())
+        Self::from_decimal_dp(decimal, precision).map_err(|e| e.to_string())
     }
 }
 
@@ -395,10 +412,21 @@ impl From<&Price> for f64 {
     }
 }
 
+impl From<Price> for Decimal {
+    fn from(value: Price) -> Self {
+        value.as_decimal()
+    }
+}
+
+impl From<&Price> for Decimal {
+    fn from(value: &Price) -> Self {
+        value.as_decimal()
+    }
+}
+
 impl Hash for Price {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.raw.hash(state);
-        self.precision.hash(state);
     }
 }
 
@@ -853,12 +881,10 @@ mod tests {
     }
 
     #[rstest]
-    fn test_from_decimal_precision_preservation() {
-        use rust_decimal::Decimal;
-
+    fn test_from_decimal_dp_preservation() {
         // Test that decimal conversion preserves exact values
-        let decimal = Decimal::from_str("123.456789").unwrap();
-        let price = Price::from_decimal(decimal, 6).unwrap();
+        let decimal = dec!(123.456789);
+        let price = Price::from_decimal_dp(decimal, 6).unwrap();
         assert_eq!(price.precision, 6);
         assert!(approx_eq!(f64, price.as_f64(), 123.456789, epsilon = 1e-10));
 
@@ -868,17 +894,76 @@ mod tests {
     }
 
     #[rstest]
-    fn test_from_decimal_rounding() {
-        use rust_decimal::Decimal;
-
+    fn test_from_decimal_dp_rounding() {
         // Test banker's rounding (round half to even)
-        let decimal = Decimal::from_str("1.005").unwrap();
-        let price = Price::from_decimal(decimal, 2).unwrap();
+        let decimal = dec!(1.005);
+        let price = Price::from_decimal_dp(decimal, 2).unwrap();
         assert_eq!(price.as_f64(), 1.0); // 1.005 rounds to 1.00 (even)
 
-        let decimal = Decimal::from_str("1.015").unwrap();
-        let price = Price::from_decimal(decimal, 2).unwrap();
+        let decimal = dec!(1.015);
+        let price = Price::from_decimal_dp(decimal, 2).unwrap();
         assert_eq!(price.as_f64(), 1.02); // 1.015 rounds to 1.02 (even)
+    }
+
+    #[rstest]
+    fn test_from_decimal_infers_precision() {
+        // Test that precision is inferred from decimal's scale
+        let decimal = dec!(123.456);
+        let price = Price::from_decimal(decimal).unwrap();
+        assert_eq!(price.precision, 3);
+        assert!(approx_eq!(f64, price.as_f64(), 123.456, epsilon = 1e-10));
+
+        // Test with integer (precision 0)
+        let decimal = dec!(100);
+        let price = Price::from_decimal(decimal).unwrap();
+        assert_eq!(price.precision, 0);
+        assert_eq!(price.as_f64(), 100.0);
+
+        // Test with high precision
+        let decimal = dec!(1.23456789);
+        let price = Price::from_decimal(decimal).unwrap();
+        assert_eq!(price.precision, 8);
+        assert!(approx_eq!(f64, price.as_f64(), 1.23456789, epsilon = 1e-10));
+    }
+
+    #[rstest]
+    fn test_from_decimal_trailing_zeros() {
+        // Decimal preserves trailing zeros in scale
+        let decimal = dec!(1.230);
+        assert_eq!(decimal.scale(), 3); // Has 3 decimal places
+
+        // from_decimal infers precision from scale (includes trailing zeros)
+        let price = Price::from_decimal(decimal).unwrap();
+        assert_eq!(price.precision, 3);
+        assert!(approx_eq!(f64, price.as_f64(), 1.23, epsilon = 1e-10));
+
+        // Normalized removes trailing zeros
+        let normalized = decimal.normalize();
+        assert_eq!(normalized.scale(), 2);
+        let price_normalized = Price::from_decimal(normalized).unwrap();
+        assert_eq!(price_normalized.precision, 2);
+    }
+
+    #[rstest]
+    fn test_from_decimal_excessive_precision_inference() {
+        // Create a decimal with more precision than FIXED_PRECISION
+        // Decimal supports up to 28 decimal places
+        let decimal = dec!(1.1234567890123456789012345678);
+
+        // If scale exceeds FIXED_PRECISION, from_decimal should error
+        if decimal.scale() > FIXED_PRECISION as u32 {
+            assert!(Price::from_decimal(decimal).is_err());
+        }
+    }
+
+    #[rstest]
+    fn test_from_decimal_negative_price() {
+        // Negative prices are valid for Price
+        let decimal = dec!(-123.45);
+        let price = Price::from_decimal(decimal).unwrap();
+        assert_eq!(price.precision, 2);
+        assert!(approx_eq!(f64, price.as_f64(), -123.45, epsilon = 1e-10));
+        assert!(price.raw < 0);
     }
 
     #[rstest]
@@ -918,7 +1003,7 @@ mod tests {
         assert_eq!(format!("{price:?}"), expected_debug);
         assert_eq!(format!("{price}"), expected_display);
         assert_eq!(
-            price.to_formatted_string().replace("_", ""),
+            price.to_formatted_string().replace('_', ""),
             expected_display
         );
     }
@@ -1073,12 +1158,38 @@ mod property_tests {
             100_000.0..1_000_000.0,
             // Small negative values (for spreads, etc.)
             -1_000.0..0.0,
+            // Boundary values close to the extremes
+            Just(PRICE_MIN / 2.0),
+            Just(PRICE_MAX / 2.0),
+        ]
+    }
+
+    fn float_precision_upper_bound() -> u8 {
+        FIXED_PRECISION.min(crate::types::fixed::MAX_FLOAT_PRECISION)
+    }
+
+    /// Strategy to exercise both typical and extreme precision values.
+    fn precision_strategy() -> impl Strategy<Value = u8> {
+        let upper = float_precision_upper_bound();
+        prop_oneof![Just(0u8), 0u8..=upper, Just(FIXED_PRECISION),]
+    }
+
+    fn precision_strategy_non_zero() -> impl Strategy<Value = u8> {
+        let upper = float_precision_upper_bound().max(1);
+        prop_oneof![Just(upper), Just(FIXED_PRECISION.max(1)), 1u8..=upper,]
+    }
+
+    fn price_raw_strategy() -> impl Strategy<Value = PriceRaw> {
+        prop_oneof![
+            Just(PRICE_RAW_MIN),
+            Just(PRICE_RAW_MAX),
+            PRICE_RAW_MIN..=PRICE_RAW_MAX,
         ]
     }
 
     /// Strategy to generate valid precision values for float-based constructors.
     fn float_precision_strategy() -> impl Strategy<Value = u8> {
-        0..=FIXED_PRECISION
+        precision_strategy()
     }
 
     proptest! {
@@ -1086,7 +1197,7 @@ mod property_tests {
         #[rstest]
         fn prop_price_serde_round_trip(
             value in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() < 1e6),
-            precision in 0u8..=6u8  // Limit precision to avoid extreme floating-point cases
+            precision in precision_strategy()
         ) {
             let original = Price::new(value, precision);
 
@@ -1109,7 +1220,7 @@ mod property_tests {
             a in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() > 1e-3 && x.abs() < 1e6),
             b in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() > 1e-3 && x.abs() < 1e6),
             c in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() > 1e-3 && x.abs() < 1e6),
-            precision in 0u8..=6u8  // Limit precision to avoid extreme cases
+            precision in precision_strategy()
         ) {
             let p_a = Price::new(a, precision);
             let p_b = Price::new(b, precision);
@@ -1135,7 +1246,7 @@ mod property_tests {
         fn prop_price_addition_subtraction_inverse(
             base in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() < 1e6),
             delta in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() > 1e-3 && x.abs() < 1e6),
-            precision in 0u8..=6u8  // Limit precision to avoid extreme cases
+            precision in precision_strategy()
         ) {
             let p_base = Price::new(base, precision);
             let p_delta = Price::new(delta, precision);
@@ -1172,10 +1283,12 @@ mod property_tests {
         fn prop_price_string_parsing_precision(
             integral in 0u32..1000000,
             fractional in 0u32..1000000,
-            precision in 1u8..=6
+            precision in precision_strategy_non_zero()
         ) {
             // Create a decimal string with exactly 'precision' decimal places
-            let fractional_str = format!("{:0width$}", fractional % 10_u32.pow(precision as u32), width = precision as usize);
+            let pow = 10u128.pow(u32::from(precision));
+            let fractional_mod = (fractional as u128) % pow;
+            let fractional_str = format!("{:0width$}", fractional_mod, width = precision as usize);
             let price_str = format!("{integral}.{fractional_str}");
 
             let parsed: Price = price_str.parse().unwrap();
@@ -1191,8 +1304,8 @@ mod property_tests {
         #[rstest]
         fn prop_price_precision_information_preservation(
             value in price_value_strategy().prop_filter("Reasonable values", |&x| x.abs() < 1e6),
-            precision1 in 1u8..=6u8,  // Limit precision range for more predictable behavior
-            precision2 in 1u8..=6u8
+            precision1 in precision_strategy_non_zero(),
+            precision2 in precision_strategy_non_zero()
         ) {
             // Skip cases where precisions are equal (trivial case)
             prop_assume!(precision1 != precision2);
@@ -1240,6 +1353,19 @@ mod property_tests {
                 prop_assert!(diff.as_f64().is_finite());
                 prop_assert!(!diff.is_undefined());
             }
+        }
+    }
+
+    proptest! {
+        /// Property: constructing from raw bounds preserves raw/precision fields
+        #[rstest]
+        fn prop_price_from_raw_round_trip(
+            raw in price_raw_strategy(),
+            precision in precision_strategy()
+        ) {
+            let price = Price::from_raw(raw, precision);
+            prop_assert_eq!(price.raw, raw);
+            prop_assert_eq!(price.precision, precision);
         }
     }
 }

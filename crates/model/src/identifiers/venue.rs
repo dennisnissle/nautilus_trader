@@ -20,7 +20,7 @@ use std::{
     hash::Hash,
 };
 
-use nautilus_core::correctness::{FAILED, check_valid_string};
+use nautilus_core::correctness::{FAILED, check_valid_string_ascii};
 use ustr::Ustr;
 
 #[cfg(feature = "defi")]
@@ -50,7 +50,7 @@ impl Venue {
     /// PyO3 requires a `Result` type for proper error handling and stacktrace printing in Python.
     pub fn new_checked<T: AsRef<str>>(value: T) -> anyhow::Result<Self> {
         let value = value.as_ref();
-        check_valid_string(value, stringify!(value))?;
+        check_valid_string_ascii(value, stringify!(value))?;
 
         #[cfg(feature = "defi")]
         if value.contains(':')
@@ -72,7 +72,7 @@ impl Venue {
     }
 
     /// Sets the inner identifier value.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
     pub(crate) fn set_inner(&mut self, value: &str) {
         self.0 = Ustr::from(value);
     }
@@ -145,20 +145,16 @@ impl Venue {
         if let Some((chain_name, dex_id)) = venue_str.split_once(':') {
             // Get the chain reference and extract the Blockchain enum
             let chain = Chain::from_chain_name(chain_name).ok_or_else(|| {
-                anyhow::anyhow!("Invalid chain '{}' in venue '{}'", chain_name, venue_str)
+                anyhow::anyhow!("Invalid chain '{chain_name}' in venue '{venue_str}'")
             })?;
 
             // Get the DexType enum
-            let dex_type = DexType::from_dex_name(dex_id).ok_or_else(|| {
-                anyhow::anyhow!("Invalid DEX '{}' in venue '{}'", dex_id, venue_str)
-            })?;
+            let dex_type = DexType::from_dex_name(dex_id)
+                .ok_or_else(|| anyhow::anyhow!("Invalid DEX '{dex_id}' in venue '{venue_str}'"))?;
 
             Ok((chain.name, dex_type))
         } else {
-            anyhow::bail!(
-                "Venue '{}' is not a DEX venue (expected format 'Chain:DexId')",
-                venue_str
-            )
+            anyhow::bail!("Venue '{venue_str}' is not a DEX venue (expected format 'Chain:DexId')")
         }
     }
 }
@@ -186,31 +182,19 @@ impl Display for Venue {
 pub fn validate_blockchain_venue(venue_part: &str) -> anyhow::Result<()> {
     if let Some((chain_name, dex_id)) = venue_part.split_once(':') {
         if chain_name.is_empty() || dex_id.is_empty() {
-            anyhow::bail!(
-                "invalid blockchain venue '{}': expected format 'Chain:DexId'",
-                venue_part
-            );
+            anyhow::bail!("invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'");
         }
         if Chain::from_chain_name(chain_name).is_none() {
             anyhow::bail!(
-                "invalid blockchain venue '{}': chain '{}' not recognized",
-                venue_part,
-                chain_name
+                "invalid blockchain venue '{venue_part}': chain '{chain_name}' not recognized"
             );
         }
         if DexType::from_dex_name(dex_id).is_none() {
-            anyhow::bail!(
-                "invalid blockchain venue '{}': dex '{}' not recognized",
-                venue_part,
-                dex_id
-            );
+            anyhow::bail!("invalid blockchain venue '{venue_part}': dex '{dex_id}' not recognized");
         }
         Ok(())
     } else {
-        anyhow::bail!(
-            "invalid blockchain venue '{}': expected format 'Chain:DexId'",
-            venue_part
-        );
+        anyhow::bail!("invalid blockchain venue '{venue_part}': expected format 'Chain:DexId'");
     }
 }
 

@@ -13,7 +13,11 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::fmt::Debug;
+//! OKX API credential storage and request signing helpers.
+
+#![allow(unused_assignments)] // Fields are accessed externally, false positive from nightly
+
+use std::fmt::{Debug, Formatter};
 
 use aws_lc_rs::hmac;
 use base64::prelude::*;
@@ -33,8 +37,8 @@ pub struct Credential {
 }
 
 impl Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credential")
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(Credential))
             .field("api_key", &self.api_key)
             .field("api_passphrase", &self.api_passphrase)
             .field("api_secret", &"<redacted>")
@@ -54,11 +58,45 @@ impl Credential {
     }
 
     /// Signs a request message according to the OKX authentication scheme.
+    ///
+    /// This string-based variant is preserved for compatibility with callers
+    /// that already have a UTF-8 body string. Prefer [`Self::sign_bytes`] when you
+    /// have the original body bytes to avoid any possibility of encoding drift.
     pub fn sign(&self, timestamp: &str, method: &str, endpoint: &str, body: &str) -> String {
-        let message = format!("{timestamp}{method}{endpoint}{body}");
+        self.sign_bytes(timestamp, method, endpoint, Some(body.as_bytes()))
+    }
+
+    /// Signs a request message using raw body bytes to avoid any UTF-8 conversion
+    /// or re-serialization differences between the signed content and the bytes sent.
+    pub fn sign_bytes(
+        &self,
+        timestamp: &str,
+        method: &str,
+        endpoint: &str,
+        body: Option<&[u8]>,
+    ) -> String {
+        let mut message = Vec::with_capacity(
+            timestamp.len() + method.len() + endpoint.len() + body.map_or(0, |b| b.len()),
+        );
+        message.extend_from_slice(timestamp.as_bytes());
+        message.extend_from_slice(method.as_bytes());
+        message.extend_from_slice(endpoint.as_bytes());
+        if let Some(b) = body {
+            message.extend_from_slice(b);
+        }
+
         let key = hmac::Key::new(hmac::HMAC_SHA256, &self.api_secret[..]);
-        let tag = hmac::sign(&key, message.as_bytes());
+        let tag = hmac::sign(&key, &message);
         BASE64_STANDARD.encode(tag.as_ref())
+    }
+
+    /// Returns a masked version of the API key for logging purposes.
+    ///
+    /// Shows first 4 and last 4 characters with ellipsis in between.
+    /// For keys shorter than 8 characters, shows asterisks only.
+    #[must_use]
+    pub fn api_key_masked(&self) -> String {
+        nautilus_core::string::mask_api_key(self.api_key.as_str())
     }
 }
 
@@ -95,13 +133,93 @@ mod tests {
     }
 
     #[rstest]
+    fn test_get_with_query_params() {
+        let credential = Credential::new(
+            API_KEY.to_string(),
+            API_SECRET.to_string(),
+            API_PASSPHRASE.to_string(),
+        );
+
+        let signature = credential.sign(
+            "2020-12-08T09:08:57.715Z",
+            "GET",
+            "/api/v5/account/balance?ccy=BTC",
+            "",
+        );
+
+        assert!(!signature.is_empty());
+        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+
+        // Verify the message is constructed correctly
+        let expected_message = "2020-12-08T09:08:57.715ZGET/api/v5/account/balance?ccy=BTC";
+
+        // Recreate signature to verify message construction
+        let key = hmac::Key::new(hmac::HMAC_SHA256, API_SECRET.as_bytes());
+        let tag = hmac::sign(&key, expected_message.as_bytes());
+        let expected_signature = BASE64_STANDARD.encode(tag.as_ref());
+        assert_eq!(signature, expected_signature);
+    }
+
+    #[rstest]
+    fn test_post_with_json_body() {
+        let credential = Credential::new(
+            API_KEY.to_string(),
+            API_SECRET.to_string(),
+            API_PASSPHRASE.to_string(),
+        );
+
+        // Test with a simple JSON body
+        let body = r#"{"instId":"BTC-USD-200925","tdMode":"isolated","side":"buy","ordType":"limit","px":"432.11","sz":"2"}"#;
+        let signature = credential.sign(
+            "2020-12-08T09:08:57.715Z",
+            "POST",
+            "/api/v5/trade/order",
+            body,
+        );
+
+        assert!(!signature.is_empty());
+        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+    }
+
+    #[rstest]
+    fn test_post_algo_order() {
+        let credential = Credential::new(
+            API_KEY.to_string(),
+            API_SECRET.to_string(),
+            API_PASSPHRASE.to_string(),
+        );
+
+        // Test with an algo order JSON body (array format as OKX expects)
+        let body = r#"[{"instId":"ETH-USDT-SWAP","tdMode":"isolated","side":"buy","ordType":"trigger","sz":"0.01","triggerPx":"3000","orderPx":"-1","triggerPxType":"last"}]"#;
+        let signature = credential.sign(
+            "2025-01-20T10:30:45.123Z",
+            "POST",
+            "/api/v5/trade/order-algo",
+            body,
+        );
+
+        assert!(!signature.is_empty());
+        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+
+        // Verify the message is constructed correctly
+        let expected_message =
+            format!("2025-01-20T10:30:45.123ZPOST/api/v5/trade/order-algo{body}");
+
+        // Recreate signature to verify message construction
+        let key = hmac::Key::new(hmac::HMAC_SHA256, API_SECRET.as_bytes());
+        let tag = hmac::sign(&key, expected_message.as_bytes());
+        let expected_signature = BASE64_STANDARD.encode(tag.as_ref());
+        assert_eq!(signature, expected_signature);
+    }
+
+    #[rstest]
     fn test_debug_redacts_secret() {
         let credential = Credential::new(
             API_KEY.to_string(),
             API_SECRET.to_string(),
             API_PASSPHRASE.to_string(),
         );
-        let dbg_out = format!("{:?}", credential);
+        let dbg_out = format!("{credential:?}");
         assert!(dbg_out.contains("api_secret: \"<redacted>\""));
         assert!(!dbg_out.contains("chNOO"));
         let secret_bytes_dbg = format!("{:?}", API_SECRET.as_bytes());
@@ -109,5 +227,25 @@ mod tests {
             !dbg_out.contains(&secret_bytes_dbg),
             "Debug output must not contain raw secret bytes"
         );
+    }
+
+    #[rstest]
+    fn test_api_key_masked_short() {
+        let credential = Credential::new(
+            "short".to_string(),
+            "secret".to_string(),
+            "pass".to_string(),
+        );
+        assert_eq!(credential.api_key_masked(), "*****");
+    }
+
+    #[rstest]
+    fn test_api_key_masked_long() {
+        let credential = Credential::new(
+            API_KEY.to_string(),
+            API_SECRET.to_string(),
+            API_PASSPHRASE.to_string(),
+        );
+        assert_eq!(credential.api_key_masked(), "985d...7083");
     }
 }

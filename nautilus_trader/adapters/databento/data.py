@@ -42,6 +42,7 @@ from nautilus_trader.data.messages import RequestBars
 from nautilus_trader.data.messages import RequestData
 from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import RequestInstruments
+from nautilus_trader.data.messages import RequestOrderBookDepth
 from nautilus_trader.data.messages import RequestQuoteTicks
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
@@ -66,6 +67,7 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import InstrumentStatus
+from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
@@ -143,6 +145,7 @@ class DatabentoDataClient(LiveMarketDataClient):
         self._timeout_initial_load: float | None = config.timeout_initial_load
         self._mbo_subscriptions_delay: float | None = config.mbo_subscriptions_delay
         self._bars_timestamp_on_close: bool = config.bars_timestamp_on_close
+        self._reconnect_timeout_mins: int | None = config.reconnect_timeout_mins
         self._parent_symbols: dict[Dataset, set[str]] = defaultdict(set)
         self._venue_dataset_map: dict[Venue, Dataset] | None = config.venue_dataset_map
         self._instrument_ids: dict[Dataset, set[InstrumentId]] = defaultdict(set)
@@ -151,6 +154,7 @@ class DatabentoDataClient(LiveMarketDataClient):
         self._log.info(f"{config.timeout_initial_load=}", LogColor.BLUE)
         self._log.info(f"{config.mbo_subscriptions_delay=}", LogColor.BLUE)
         self._log.info(f"{config.bars_timestamp_on_close=}", LogColor.BLUE)
+        self._log.info(f"{config.reconnect_timeout_mins=}", LogColor.BLUE)
 
         # Clients
         self._http_client = http_client
@@ -309,6 +313,7 @@ class DatabentoDataClient(LiveMarketDataClient):
                 publishers_filepath=str(PUBLISHERS_FILEPATH),
                 use_exchange_as_venue=self._use_exchange_as_venue,
                 bars_timestamp_on_close=self._bars_timestamp_on_close,
+                reconnect_timeout_mins=self._reconnect_timeout_mins,
             )
             self._live_clients[dataset] = live_client
 
@@ -325,6 +330,7 @@ class DatabentoDataClient(LiveMarketDataClient):
                 publishers_filepath=str(PUBLISHERS_FILEPATH),
                 use_exchange_as_venue=self._use_exchange_as_venue,
                 bars_timestamp_on_close=self._bars_timestamp_on_close,
+                reconnect_timeout_mins=self._reconnect_timeout_mins,
             )
             self._live_clients_mbo[dataset] = live_client
 
@@ -806,6 +812,8 @@ class DatabentoDataClient(LiveMarketDataClient):
             await self._request_imbalance(request.data_type, request.id)
         elif request.data_type.type == DatabentoStatistics:
             await self._request_statistics(request.data_type, request.id)
+        elif request.data_type.type == OrderBookDepth10:
+            await self._request_order_book_depth(request)
         else:
             raise NotImplementedError(
                 f"Cannot request {request.data_type.type} (not implemented)",
@@ -1123,7 +1131,47 @@ class DatabentoDataClient(LiveMarketDataClient):
         self._handle_bars(
             bar_type=request.bar_type,
             bars=bars,
-            partial=None,  # No partials
+            correlation_id=request.id,
+            start=request.start,
+            end=request.end,
+            params=request.params,
+        )
+
+    async def _request_order_book_depth(self, request: RequestOrderBookDepth) -> None:
+        dataset: Dataset = self._loader.get_dataset_for_venue(request.instrument_id.venue)
+        self._log.info(
+            f"DEBUG: Dataset for venue {request.instrument_id.venue}: {dataset}",
+            LogColor.CYAN,
+        )
+
+        start, end = await self._resolve_time_range_for_request(dataset, request.start, request.end)
+
+        if request.limit > 0:
+            self._log.warning(
+                f"Databento does not support `limit` parameter for order book depths, "
+                f"ignoring limit={request.limit}",
+            )
+
+        self._log.info(
+            f"Requesting {request.instrument_id} order book depth data: "
+            f"depth={request.depth}, "
+            f"start={start}, "
+            f"end={end}",
+            LogColor.BLUE,
+        )
+
+        pyo3_depths = await self._http_client.get_order_book_depth10(
+            dataset=dataset,
+            instrument_ids=[instrument_id_to_pyo3(request.instrument_id)],
+            start=start.value,
+            end=end.value,
+            depth=request.depth,
+        )
+        depths = OrderBookDepth10.from_pyo3_list(pyo3_depths)
+
+        self._handle_order_book_depths(
+            instrument_id=request.instrument_id,
+            depths=depths,
             correlation_id=request.id,
             start=request.start,
             end=request.end,

@@ -19,7 +19,10 @@ use rust_decimal::Decimal;
 use tabled::{Table, Tabled, settings::Style};
 
 use super::{BookPrice, level::BookLevel, own::OwnBookLevel};
-use crate::orderbook::{OrderBook, own::OwnOrderBook};
+use crate::{
+    enums::OrderSideSpecified,
+    orderbook::{OrderBook, own::OwnOrderBook},
+};
 
 #[derive(Tabled)]
 struct BookLevelDisplay {
@@ -30,6 +33,7 @@ struct BookLevelDisplay {
 
 /// Return a [`String`] representation of the order book in a human-readable table format.
 #[must_use]
+#[allow(clippy::needless_collect)] // Collect needed for .rev() and .chain()
 pub(crate) fn pprint_book(
     order_book: &OrderBook,
     num_levels: usize,
@@ -79,8 +83,8 @@ pub(crate) fn pprint_book(
         levels
             .iter()
             .map(|(book_price, level)| {
-                let is_bid_level = order_book.bids.levels.contains_key(book_price);
-                let is_ask_level = order_book.asks.levels.contains_key(book_price);
+                let is_bid_level = book_price.side == OrderSideSpecified::Buy;
+                let is_ask_level = book_price.side == OrderSideSpecified::Sell;
 
                 let bid_sizes: Vec<String> = level
                     .orders
@@ -116,9 +120,12 @@ pub(crate) fn pprint_book(
     let table = Table::new(data).with(Style::rounded()).to_string();
 
     let header = format!(
-        "bid_levels: {}\nask_levels: {}",
+        "bid_levels: {}\nask_levels: {}\nsequence: {}\nupdate_count: {}\nts_last: {}",
         order_book.bids.levels.len(),
-        order_book.asks.levels.len()
+        order_book.asks.levels.len(),
+        order_book.sequence,
+        order_book.update_count,
+        order_book.ts_last,
     );
 
     format!("{header}\n{table}")
@@ -126,6 +133,7 @@ pub(crate) fn pprint_book(
 
 /// Return a [`String`] representation of the own order book in a human-readable table format.
 #[must_use]
+#[allow(clippy::needless_collect)] // Collect needed for .rev() and .chain()
 pub(crate) fn pprint_own_book(
     own_order_book: &OwnOrderBook,
     num_levels: usize,
@@ -177,8 +185,8 @@ pub(crate) fn pprint_own_book(
         levels
             .iter()
             .map(|(book_price, level)| {
-                let is_bid_level = own_order_book.bids.levels.contains_key(book_price);
-                let is_ask_level = own_order_book.asks.levels.contains_key(book_price);
+                let is_bid_level = book_price.side == OrderSideSpecified::Buy;
+                let is_ask_level = book_price.side == OrderSideSpecified::Sell;
 
                 let bid_sizes: Vec<String> = level
                     .orders
@@ -214,9 +222,11 @@ pub(crate) fn pprint_own_book(
     let table = Table::new(data).with(Style::rounded()).to_string();
 
     let header = format!(
-        "bid_levels: {}\nask_levels: {}",
+        "bid_levels: {}\nask_levels: {}\nupdate_count: {}\nts_last: {}",
         own_order_book.bids.levels.len(),
-        own_order_book.asks.levels.len()
+        own_order_book.asks.levels.len(),
+        own_order_book.update_count,
+        own_order_book.ts_last,
     );
 
     format!("{header}\n{table}")

@@ -43,8 +43,7 @@ mod encryption {
         use std::{convert::TryFrom, sync::Arc};
 
         use nautilus_cryptography::tls::create_tls_config;
-        pub use rustls::ClientConfig;
-        use rustls::pki_types::ServerName;
+        use rustls::{ClientConfig, pki_types::ServerName};
         use tokio::io::{AsyncRead, AsyncWrite};
         use tokio_rustls::TlsConnector as TokioTlsConnector;
         use tokio_tungstenite::{
@@ -64,7 +63,7 @@ mod encryption {
             match mode {
                 Mode::Plain => Ok(MaybeTlsStream::Plain(socket)),
                 Mode::Tls => {
-                    let config = match tls_connector {
+                    let config: Arc<ClientConfig> = match tls_connector {
                         Some(config) => config,
                         None => create_tls_config(),
                     };
@@ -146,7 +145,10 @@ fn domain(request: &Request) -> Result<String, Error> {
     }
 }
 
-pub fn create_tls_config_from_certs_dir(certs_dir: &Path) -> anyhow::Result<rustls::ClientConfig> {
+pub fn create_tls_config_from_certs_dir(
+    certs_dir: &Path,
+    require_client_auth: bool,
+) -> anyhow::Result<rustls::ClientConfig> {
     if !certs_dir.is_dir() {
         anyhow::bail!("Certificate path is not a directory: {certs_dir:?}");
     }
@@ -182,34 +184,37 @@ pub fn create_tls_config_from_certs_dir(certs_dir: &Path) -> anyhow::Result<rust
         }
     }
 
-    let (cert, key) = client_cert
-        .zip(client_key)
-        .ok_or_else(|| anyhow::anyhow!("Could not find both client certificate and private key"))?;
+    let builder = rustls::ClientConfig::builder().with_root_certificates(root_store);
 
-    Ok(rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_client_auth_cert(cert, key)?)
+    if let (Some(cert), Some(key)) = (client_cert, client_key) {
+        return Ok(builder.with_client_auth_cert(cert, key)?);
+    }
+
+    if require_client_auth {
+        anyhow::bail!(
+            "Client certificate or private key missing in {certs_dir:?} but client auth required",
+        );
+    }
+
+    tracing::warn!(
+        "No TLS client certificate/key found in {:?}; proceeding without client authentication",
+        certs_dir
+    );
+
+    Ok(builder.with_no_client_auth())
 }
 
 fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
-    let pkcs8_keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .filter_map(std::result::Result::ok)
-        .collect();
-
-    if let Some(key) = pkcs8_keys.into_iter().next() {
+    if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader).find_map(Result::ok) {
         return Ok(key.into());
     }
 
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
-    let rsa_keys: Vec<_> = rustls_pemfile::rsa_private_keys(&mut reader)
-        .filter_map(std::result::Result::ok)
-        .collect();
-
-    if let Some(key) = rsa_keys.into_iter().next() {
+    if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader).find_map(Result::ok) {
         return Ok(key.into());
     }
 

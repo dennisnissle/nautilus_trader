@@ -21,15 +21,17 @@ from nautilus_trader.adapters.binance.websocket.client import BinanceWebSocketCl
 from nautilus_trader.common.component import LiveClock
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_binance_websocket_client():
     clock = LiveClock()
+
+    loop = asyncio.get_running_loop()
 
     client = BinanceWebSocketClient(
         clock=clock,
         handler=print,
         base_url="wss://fstream.binance.com",
-        loop=asyncio.get_event_loop(),
+        loop=loop,
     )
 
     await client.connect()

@@ -14,7 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.core.rust.model cimport PriceType
-from nautilus_trader.indicators.averages cimport MovingAverage
+from nautilus_trader.indicators.averages cimport MovingAverage, SimpleMovingAverage
 from nautilus_trader.indicators.base cimport Indicator
 from nautilus_trader.model.data cimport Bar
 
@@ -44,6 +44,19 @@ cdef class RateOfChange(Indicator):
 
     cpdef void update_raw(self, double value)
 
+cdef class RateOfChangeRatioSMA(Indicator):
+    cdef SimpleMovingAverage _average_close
+
+    cdef readonly int sma_period
+    """The SMA window period.\n\n:returns: `int`"""
+    cdef object _prices
+
+    cdef readonly int period
+    """The window period.\n\n:returns: `int`"""
+    cdef readonly double value
+    """The current value.\n\n:returns: `double`"""
+
+    cpdef void update_raw(self, double value)
 
 cdef class ChandeMomentumOscillator(Indicator):
     cdef MovingAverage _average_gain

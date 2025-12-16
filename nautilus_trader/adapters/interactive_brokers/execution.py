@@ -435,7 +435,11 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             else:
                 continue  # Skip, IB may continue to display closed positions
 
-            instrument = await self.instrument_provider.get_instrument(position.contract)
+            try:
+                instrument = await self.instrument_provider.get_instrument(position.contract)
+            except ValueError:
+                instrument = None
+                pass
 
             if instrument is None:
                 if position.contract.secType in self._filter_sec_types:
@@ -678,7 +682,11 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         for position in positions:
             self._log.debug(f"Trying PositionStatusReport for {position.contract.conId}")
 
-            instrument = await self.instrument_provider.get_instrument(position.contract)
+            try:
+                instrument = await self.instrument_provider.get_instrument(position.contract)
+            except ValueError:
+                instrument = None
+                pass
 
             if instrument is None:
                 if position.contract.secType in self._filter_sec_types:

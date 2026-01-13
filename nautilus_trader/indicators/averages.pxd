@@ -99,6 +99,7 @@ cdef class AdaptiveMovingAverage(MovingAverage):
 
 cdef class WilderMovingAverage(MovingAverage):
     cdef readonly double alpha
+    cdef SimpleMovingAverage warmup_sma
     """The moving average alpha value.\n\n:returns: `double`"""
 
 

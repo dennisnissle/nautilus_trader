@@ -56,6 +56,7 @@ from nautilus_trader.indicators.trend import DirectionalMovement
 from nautilus_trader.indicators.trend import LinearRegression
 from nautilus_trader.indicators.trend import MovingAverageConvergenceDivergence
 from nautilus_trader.indicators.trend import Swings
+from nautilus_trader.indicators.trend import DirectionalMovementTR
 from nautilus_trader.indicators.volatility import AverageTrueRange
 from nautilus_trader.indicators.volatility import BollingerBands
 from nautilus_trader.indicators.volatility import DonchianChannel
@@ -83,6 +84,7 @@ __all__ = [
     "ChandeMomentumOscillator",
     "CommodityChannelIndex",
     "DirectionalMovement",
+    "DirectionalMovementTR",
     "DonchianChannel",
     "DoubleExponentialMovingAverage",
     "EfficiencyRatio",

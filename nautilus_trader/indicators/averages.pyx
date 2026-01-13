@@ -704,7 +704,7 @@ cdef class AdaptiveMovingAverage(MovingAverage):
 cdef class WilderMovingAverage(MovingAverage):
     """
     The Wilder's Moving Average is simply an Exponential Moving Average (EMA) with
-    a modified alpha = 1 / period.
+    a modified alpha = 1 / period. Use an SMA during warmup period to mirror TradingView.
 
     Parameters
     ----------
@@ -724,6 +724,7 @@ cdef class WilderMovingAverage(MovingAverage):
         super().__init__(period, params=[period], price_type=price_type)
 
         self.alpha = 1.0 / period
+        self.warmup_sma = SimpleMovingAverage(period=period, price_type=price_type)
         self.value = 0
 
     cpdef void handle_quote_tick(self, QuoteTick tick):
@@ -783,7 +784,11 @@ cdef class WilderMovingAverage(MovingAverage):
         if not self.has_inputs:
             self.value = value
 
-        self.value = self.alpha * value + ((1.0 - self.alpha) * self.value)
+        if not self.initialized:
+            self.warmup_sma.update_raw(value)
+            self.value = self.warmup_sma.value
+        else:
+            self.value = self.alpha * value + ((1.0 - self.alpha) * self.value)
         self._increment_count()
 
 

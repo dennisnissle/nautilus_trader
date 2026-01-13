@@ -26,7 +26,7 @@ from cpython.datetime cimport datetime
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.indicators.averages cimport MovingAverageType
-
+from nautilus_trader.indicators.volatility import AverageTrueRange
 
 cdef str get_ma_type_name(MovingAverageType ma_type):
     if ma_type == MovingAverageType.SIMPLE:
@@ -346,6 +346,127 @@ cdef class DirectionalMovement(Indicator):
         self._previous_low = 0
         self.pos = 0
         self.neg = 0
+
+
+cdef class DirectionalMovementTR(Indicator):
+    """
+    Two oscillators that capture positive and negative trend movement.
+
+    Parameters
+    ----------
+    period : int
+        The rolling window period for the indicator (> 0).
+    ma_type : MovingAverageType
+        The moving average type for the indicator (cannot be None).
+    """
+
+    def __init__(
+        self,
+        int period,
+        MovingAverageType ma_type=MovingAverageType.WILDER,
+    ):
+        Condition.positive_int(period, "period")
+        params = [
+            period,
+            get_ma_type_name(ma_type),
+        ]
+        super().__init__(params=params)
+
+        self.period = period
+        self._pos_ma = MovingAverageFactory.create(period, ma_type)
+        self._neg_ma = MovingAverageFactory.create(period, ma_type)
+        self._atr = AverageTrueRange(period, ma_type)
+        self._previous_high = 0
+        self._previous_low = 0
+        self._previous_close = 0
+        self.pos = 0
+        self.neg = 0
+
+    cpdef void handle_bar(self, Bar bar):
+        """
+        Update the indicator with the given bar.
+
+        Parameters
+        ----------
+        bar : Bar
+            The update bar.
+
+        """
+        Condition.not_none(bar, "bar")
+
+        self.update_raw(
+            bar.high.as_double(),
+            bar.low.as_double(),
+            bar.close.as_double(),
+        )
+
+    cpdef void update_raw(
+        self,
+        double high,
+        double low,
+        double close,
+    ):
+        """
+        Update the indicator with the given raw values.
+
+        Parameters
+        ----------
+        high : double
+            The high price.
+        low : double
+            The low price.
+
+        """
+        if not self.has_inputs:
+            self._previous_high = high
+            self._previous_low = low
+            self._previous_close = close
+
+        cdef double up = high - self._previous_high
+        cdef double down = self._previous_low - low
+
+        cdef int is_plus_dm = up > down and up > 0
+        cdef int is_minus_dm = down > up and down > 0
+        cdef double plus_dm = up if is_plus_dm else 0
+        cdef double minus_dm = down if is_minus_dm else 0
+
+        self._atr.update_raw(high, low, close)
+
+        # Do only update DM MA after receiving inputs to mirror TradingViews behaviour.
+        if self.has_inputs:
+            self._pos_ma.update_raw(plus_dm)
+            self._neg_ma.update_raw(minus_dm)
+
+        self.pos = 100 * (self._pos_ma.value / self._atr.value)
+        self.neg = 100 * (self._neg_ma.value / self._atr.value)
+
+        self._previous_high = high
+        self._previous_low = low
+        self._previous_close = close
+
+        # Initialization logic
+        if not self.initialized:
+            self._set_has_inputs(True)
+            if self._neg_ma.initialized:
+                self._set_initialized(True)
+
+    cpdef void _reset(self):
+        """
+        Reset the indicator.
+
+        All stateful fields are reset to their initial value.
+        """
+        self._pos_ma.reset()
+        self._neg_ma.reset()
+        self._trur_ma.reset()
+        self._atr.reset()
+        self._previous_high = 0
+        self._previous_low = 0
+        self._previous_close = 0
+        self.pos = 0
+        self.neg = 0
+        self.pos_ma = 0
+        self.neg_ma = 0
 
 
 cdef class MovingAverageConvergenceDivergence(Indicator):

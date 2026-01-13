@@ -68,6 +68,22 @@ cdef class DirectionalMovement(Indicator):
     cpdef void update_raw(self, double high, double low)
 
 
+cdef class DirectionalMovementTR(Indicator):
+    cdef AverageTrueRange _atr
+    cdef MovingAverage _pos_ma
+    cdef MovingAverage _neg_ma
+    cdef double _previous_high
+    cdef double _previous_low
+    cdef double _previous_close
+
+    cdef readonly int period
+    cdef readonly double value
+    cdef readonly double pos
+    cdef readonly double neg
+
+    cpdef void update_raw(self, double high, double low, double close)
+
+
 cdef class MovingAverageConvergenceDivergence(Indicator):
     cdef MovingAverage _fast_ma
     cdef MovingAverage _slow_ma

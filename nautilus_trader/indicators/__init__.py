@@ -58,6 +58,8 @@ from nautilus_trader.indicators.trend import MovingAverageConvergenceDivergence
 from nautilus_trader.indicators.trend import Swings
 from nautilus_trader.indicators.trend import DirectionalMovementTR
 from nautilus_trader.indicators.volatility import AverageTrueRange
+from nautilus_trader.indicators.volatility import AverageTrueRangeNormalized
+from nautilus_trader.indicators.volatility import LiquidityMeasure
 from nautilus_trader.indicators.volatility import BollingerBands
 from nautilus_trader.indicators.volatility import DonchianChannel
 from nautilus_trader.indicators.volatility import KeltnerChannel

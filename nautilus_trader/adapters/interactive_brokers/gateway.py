@@ -180,7 +180,9 @@ class DockerizedIBGateway:
                 "TWS_PASSWORD": self.password.get_value(),
                 "TRADING_MODE": self.trading_mode,
                 "READ_ONLY_API": {True: "yes", False: "no"}[self.read_only_api],
-                "VNC_SERVER_PASSWORD": "1234567"
+                "VNC_SERVER_PASSWORD": "1234567",
+                "BYPASS_WARNING": "yes",
+                "ALLOW_BLIND_TRADING": "yes"
             },
         )
         self.log.info(f"Container `{self.container_name}` starting, waiting for ready")

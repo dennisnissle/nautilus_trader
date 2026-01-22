@@ -34,6 +34,34 @@ cdef class AverageTrueRange(Indicator):
     cdef void _check_initialized(self)
 
 
+cdef class AverageTrueRangeNormalized(Indicator):
+    cdef MovingAverage _ma
+    cdef bint _use_previous
+    cdef double _value_floor
+    cdef double _previous_close
+
+    cdef readonly int period
+    """The window period.\n\n:returns: `int`"""
+    cdef readonly double value
+    """The current value.\n\n:returns: `double`"""
+
+    cpdef void update_raw(self, double high, double low, double close)
+    cdef void _floor_value(self)
+    cdef void _check_initialized(self)
+
+
+cdef class LiquidityMeasure(Indicator):
+    cdef MovingAverage _ma
+
+    cdef readonly int period
+    """The window period.\n\n:returns: `int`"""
+    cdef readonly double value
+    """The current value.\n\n:returns: `double`"""
+
+    cpdef void update_raw(self, double high, double low, double volume)
+    cdef void _check_initialized(self)
+
+
 cdef class BollingerBands(Indicator):
     cdef object _prices
     cdef MovingAverage _ma

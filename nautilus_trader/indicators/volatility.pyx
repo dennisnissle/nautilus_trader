@@ -163,6 +163,197 @@ cdef class AverageTrueRange(Indicator):
         self.value = 0
 
 
+cdef class AverageTrueRangeNormalized(Indicator):
+    """
+    An indicator which calculates the average true range across a rolling window.
+    Different moving average types can be selected for the inner calculation.
+
+    Parameters
+    ----------
+    period : int
+        The rolling window period for the indicator (> 0).
+    ma_type : MovingAverageType
+        The moving average type for the indicator (cannot be None).
+    use_previous : bool
+        The boolean flag indicating whether previous price values should be used.
+        (note: only applicable for `update()`. `update_mid()` will need to
+        use previous price.
+    value_floor : double
+        The floor (minimum) output value for the indicator (>= 0).
+    """
+
+    def __init__(
+        self,
+        int period,
+        MovingAverageType ma_type=MovingAverageType.WILDER,
+        bint use_previous=True,
+        double value_floor=0,
+    ):
+        Condition.positive_int(period, "period")
+        Condition.not_negative(value_floor, "value_floor")
+        params = [
+            period,
+            get_ma_type_name(ma_type),
+            use_previous,
+            value_floor,
+        ]
+        super().__init__(params=params)
+
+        self.period = period
+        self._ma = MovingAverageFactory.create(period, ma_type)
+        self._use_previous = use_previous
+        self._value_floor = value_floor
+        self._previous_close = 0
+        self.value = 0
+
+    cpdef void handle_bar(self, Bar bar):
+        """
+        Update the indicator with the given bar.
+
+        Parameters
+        ----------
+        bar : Bar
+            The update bar.
+
+        """
+        Condition.not_none(bar, "bar")
+
+        self.update_raw(bar.high.as_double(), bar.low.as_double(), bar.close.as_double())
+
+    cpdef void update_raw(
+        self,
+        double high,
+        double low,
+        double close,
+    ):
+        """
+        Update the indicator with the given raw values.
+
+        Parameters
+        ----------
+        high : double
+            The high price.
+        low : double
+            The low price.
+        close : double
+            The close price.
+
+        """
+        # Calculate average
+        if self._use_previous:
+            if not self.has_inputs:
+                self._previous_close = close
+            self._ma.update_raw(max(self._previous_close, high) - min(low, self._previous_close))
+            self._previous_close = close
+        else:
+            self._ma.update_raw(high - low)
+
+        self._floor_value()
+        self.value = self.value / close * 100
+
+        self._check_initialized()
+
+    cdef void _floor_value(self):
+        if self._value_floor == 0:
+            self.value = self._ma.value
+        elif self._value_floor < self._ma.value:
+            self.value = self._ma.value
+        else:
+            # Floor the value
+            self.value = self._value_floor
+
+    cdef void _check_initialized(self):
+        if not self.initialized:
+            self._set_has_inputs(True)
+            if self._ma.initialized:
+                self._set_initialized(True)
+
+    cpdef void _reset(self):
+        self._ma.reset()
+        self._previous_close = 0
+        self.value = 0
+
+
+cdef class LiquidityMeasure(Indicator):
+    """
+    An indicator which calculates the average true range across a rolling window.
+    Different moving average types can be selected for the inner calculation.
+
+    Parameters
+    ----------
+    period : int
+        The rolling window period for the indicator (> 0).
+    ma_type : MovingAverageType
+        The moving average type for the indicator (cannot be None).
+    """
+
+    def __init__(
+        self,
+        int period,
+        MovingAverageType ma_type=MovingAverageType.WILDER
+    ):
+        Condition.positive_int(period, "period")
+        params = [
+            period,
+            get_ma_type_name(ma_type)
+        ]
+        super().__init__(params=params)
+
+        self.period = period
+        self._ma = MovingAverageFactory.create(period, ma_type)
+        self.value = 0
+
+    cpdef void handle_bar(self, Bar bar):
+        """
+        Update the indicator with the given bar.
+
+        Parameters
+        ----------
+        bar : Bar
+            The update bar.
+
+        """
+        Condition.not_none(bar, "bar")
+
+        self.update_raw(bar.high.as_double(), bar.low.as_double(), bar.volume.as_double())
+
+    cpdef void update_raw(
+        self,
+        double high,
+        double low,
+        double volume,
+    ):
+        """
+        Update the indicator with the given raw values.
+
+        Parameters
+        ----------
+        high : double
+            The high price.
+        low : double
+            The low price.
+        volume : double
+            The volume.
+
+        """
+        cdef double tr = high - low
+        cdef double liquid = 0 if (tr <= 0 or volume <= 10) else 1
+
+        self._ma.update_raw(liquid)
+        self.value = self._ma.value
+        self._check_initialized()
+
+    cdef void _check_initialized(self):
+        if not self.initialized:
+            self._set_has_inputs(True)
+            if self._ma.initialized:
+                self._set_initialized(True)
+
+    cpdef void _reset(self):
+        self._ma.reset()
+        self.value = 0
+
+
 cdef class BollingerBands(Indicator):
     """
     A Bollinger Band® is a technical analysis tool defined by a set of

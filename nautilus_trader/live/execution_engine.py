@@ -2848,7 +2848,7 @@ class LiveExecutionEngine(ExecutionEngine):
                 return True  # No further reconciliation
 
             # Add to cache without determining any position ID initially
-            self._cache.add_order(order)
+            self._cache.add_order(order, overwrite=True)
 
             # Explicitly index venue_order_id for external orders to ensure they can be found
             # by venue_order_id in subsequent reconciliation passes

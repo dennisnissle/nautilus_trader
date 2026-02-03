@@ -14,6 +14,8 @@ This will be the final release with support for the dYdX v3 (legacy) API. Future
 - Added `oto_trigger_mode` venue config option to control whether OTO child orders activate on partial fills (PARTIAL) or only after full fill (FULL) (default PARTIAL) (#3454), thanks @godnight10061
 - Added `request_funding_rates` and `FundingRateUpdate` Arrow serialization (#3467), thanks @dxwil
 - Added `optimize_file_loading` as BacktestDataConfig parameter (#3518), thanks @faysou
+- Added Betfair RCM parsing for TPD race data
+- Added `BetfairOrderVoided` custom data type for VAR voids
 - Added Bybit mark price subscriptions support
 - Added Bybit index price subscriptions support
 - Added Polymarket data loader event-level API support (#3484), thanks @jsemldonado
@@ -32,6 +34,7 @@ This will be the final release with support for the dYdX v3 (legacy) API. Future
 - Adapter implementations should now override `_subscribe_order_book_depth` and `_unsubscribe_order_book_depth` for `OrderBookDepth10` subscriptions
 
 ### Security
+- Upgraded `arc-swap` to 1.8.1 fixing potential use-after-free in debt mechanism (memory ordering fix)
 - Fixed `CVec::empty()` to use dangling pointer instead of null, avoiding undefined behavior in `Vec::from_raw_parts`
 - Masked Binance listen keys in execution client logs
 - Refactored supply chain security checks and update dependencies
@@ -43,6 +46,7 @@ This will be the final release with support for the dYdX v3 (legacy) API. Future
 - Fixed matching engine trade execution fills discarded with `liquidity_consumption`
 - Fixed matching engine trade execution fill model and FOK/IOC handling
 - Fixed inverse instrument `base_currency` access across accounting
+- Fixed order cancel not releasing locked balance in backtest (#3525), thanks for reporting @dennisnissle
 - Fixed remaining `F_LAST` flag checks to use proper bitmask comparison
 - Fixed `MarketIfTouchedOrder` (MIT) filling at bar extremes instead of trigger price during backtesting (#3461, #3462), thanks @HaakonFlaaronning
 - Fixed OTO child order sizing with rapid parent fills (#3435), thanks for reporting @dxwil

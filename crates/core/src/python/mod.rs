@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -82,6 +82,13 @@ pub fn clone_py_object(obj: &Py<PyAny>) -> Py<PyAny> {
     Python::attach(|py| obj.clone_ref(py))
 }
 
+/// Calls a Python callback with a single argument, logging any errors.
+pub fn call_python(py: Python, callback: &Py<PyAny>, py_obj: Py<PyAny>) {
+    if let Err(e) = callback.call1(py, (py_obj,)) {
+        log::error!("Error calling Python: {e}");
+    }
+}
+
 /// Extend `IntoPyObjectExt` helper trait to unwrap `Py<PyAny>` after conversion.
 pub trait IntoPyObjectNautilusExt<'py>: IntoPyObjectExt<'py> {
     /// Convert `self` into a [`Py<PyAny>`] while *panicking* if the conversion fails.
@@ -153,6 +160,7 @@ pub fn to_pyruntime_err(e: impl Display) -> PyErr {
 )]
 #[allow(unsafe_code)]
 fn py_is_pycapsule(obj: Py<PyAny>) -> bool {
+    // SAFETY: obj.as_ptr() returns a valid Python object pointer
     unsafe {
         // PyCapsule_CheckExact checks if the object is exactly a PyCapsule
         pyo3::ffi::PyCapsule_CheckExact(obj.as_ptr()) != 0

@@ -42,14 +42,13 @@ completing a backtest run and provide immediate visual feedback on strategy perf
 Generate a tearsheet with default settings:
 
 ```python
+from nautilus_trader.analysis import create_tearsheet
 from nautilus_trader.backtest.engine import BacktestEngine
 
 # After running your backtest
 engine.run()
 
 # Generate tearsheet
-from nautilus_trader.analysis.tearsheet import create_tearsheet
-
 create_tearsheet(
     engine=engine,
     output_path="backtest_results.html",
@@ -65,9 +64,18 @@ Control which charts appear and how they're styled:
 
 ```python
 from nautilus_trader.analysis import TearsheetConfig
+from nautilus_trader.analysis import TearsheetDrawdownChart
+from nautilus_trader.analysis import TearsheetEquityChart
+from nautilus_trader.analysis import TearsheetRunInfoChart
+from nautilus_trader.analysis import TearsheetStatsTableChart
 
 config = TearsheetConfig(
-    charts=["run_info", "stats_table", "equity", "drawdown"],
+    charts=[
+        TearsheetRunInfoChart(),
+        TearsheetStatsTableChart(),
+        TearsheetEquityChart(),
+        TearsheetDrawdownChart(),
+    ],
     theme="nautilus_dark",
     height=2000,
 )
@@ -89,11 +97,11 @@ from nautilus_trader.model.currencies import USD
 create_tearsheet(
     engine=engine,
     output_path="usd_only.html",
-    currency=USD,  # Show only USD statistics
+    currency=USD,  # Currency object, shows only USD statistics
 )
 ```
 
-When `currency` is `None` (default), all currencies are displayed in the tearsheet.
+When `currency` is `None` (default), statistics for all currencies are displayed separately in the tearsheet.
 
 ## Available charts
 
@@ -109,10 +117,10 @@ The tearsheet can include any combination of the following built-in charts:
 | `distribution`     | Histogram    | Distribution of individual return values.                |
 | `rolling_sharpe`   | Line         | 60-day rolling Sharpe ratio.                             |
 | `yearly_returns`   | Bar          | Annual return percentages.                               |
-| `bars_with_fills`  | Candlestick  | Price bars (OHLC) with order fills overlaid as bars.     |
+| `bars_with_fills`  | Candlestick  | Price bars (OHLC) with order fills overlaid as markers.  |
 
-All charts are registered in the chart registry and can be referenced by name in
-`TearsheetConfig.charts`.
+All charts are registered in the chart registry and are configured via chart objects in
+`TearsheetConfig.charts` (each chart object maps to a built-in chart name).
 
 ### Run information table
 
@@ -145,7 +153,8 @@ is provided to `create_tearsheet()`, the benchmark is overlaid for comparison.
 import pandas as pd
 
 # Load benchmark returns (e.g., from a market index)
-benchmark_returns = pd.read_csv("sp500_returns.csv", index_col=0)["return"]
+# Index should be datetime, aligned with strategy returns timeframe
+benchmark_returns = pd.read_csv("sp500_returns.csv", index_col=0, parse_dates=True)["return"]
 
 create_tearsheet(
     engine=engine,
@@ -154,6 +163,8 @@ create_tearsheet(
     benchmark_name="S&P 500",
 )
 ```
+
+The benchmark series is plotted as-is; ensure the index aligns with your strategy's return dates for accurate comparison.
 
 ## Themes
 
@@ -181,7 +192,7 @@ create_tearsheet(engine=engine, config=config)
 Register a custom theme for consistent branding across all visualizations:
 
 ```python
-from nautilus_trader.analysis.themes import register_theme
+from nautilus_trader.analysis import register_theme
 
 register_theme(
     name="corporate",
@@ -214,10 +225,18 @@ before table-specific colors were introduced.
 The `TearsheetConfig` class provides declarative control over tearsheet generation:
 
 ```python
-from nautilus_trader.analysis import TearsheetConfig, GridLayout
+from nautilus_trader.analysis import GridLayout
+from nautilus_trader.analysis import TearsheetConfig
+from nautilus_trader.analysis import TearsheetDrawdownChart
+from nautilus_trader.analysis import TearsheetEquityChart
+from nautilus_trader.analysis import TearsheetStatsTableChart
 
 config = TearsheetConfig(
-    charts=["equity", "drawdown", "stats_table"],
+    charts=[
+        TearsheetEquityChart(),
+        TearsheetDrawdownChart(),
+        TearsheetStatsTableChart(),
+    ],
     theme="nautilus_dark",
     title="Q4 2024 Strategy Performance",
     height=1800,
@@ -237,15 +256,14 @@ config = TearsheetConfig(
 
 | Parameter           | Type                          | Default                           | Description                                   |
 |---------------------|-------------------------------|-----------------------------------|-----------------------------------------------|
-| `charts`            | `list[str]`                   | All built-in charts               | List of chart names to include.               |
+| `charts`            | `list[TearsheetChart]`        | All built-in charts               | List of chart objects to include (in order).  |
 | `theme`             | `str`                         | `"plotly_white"`                  | Theme name for styling.                       |
 | `layout`            | `GridLayout`                  | `None` (auto-calculated)          | Custom subplot grid layout.                   |
 | `title`             | `str`                         | Auto-generated with strategy/time | Tearsheet title.                              |
 | `include_benchmark` | `bool`                        | `True`                            | Show benchmark when provided.                 |
 | `benchmark_name`    | `str`                         | `"Benchmark"`                     | Display name for benchmark.                   |
 | `height`            | `int`                         | `1500`                            | Total height in pixels.                       |
-| `show_logo`         | `bool`                        | `True`                            | Display NautilusTrader logo (not implemented).|
-| `chart_args`        | `dict[str, dict[str, Any]]`   | `None`                            | Arguments for specific charts (e.g., `bar_type` for `bars_with_fills`).|
+| `show_logo`         | `bool`                        | `True`                            | Display NautilusTrader logo (reserved for future use).|
 
 When `layout` is `None`, the grid dimensions and row heights are automatically calculated
 based on the number of charts. For 8 charts (the default), a 4×2 grid is used with
@@ -294,20 +312,25 @@ def my_custom_chart(returns, output_path=None, title="Custom Chart", theme="plot
 
     return fig
 
-# Register the chart for use in tearsheets
+# Register the chart for standalone use (via `get_chart()` / `list_charts()`)
 register_chart("my_custom", my_custom_chart)
-
-# Include it in tearsheet config
-config = TearsheetConfig(
-    charts=["stats_table", "equity", "my_custom"],
-)
 ```
 
 ### Tearsheet integration
 
-For full tearsheet integration with proper grid placement, use the lower-level registration:
+For full tearsheet integration with proper grid placement, use the lower-level registration.
+
+:::warning
+The `_register_tearsheet_chart` function is internal API and may change between releases.
+For most use cases, prefer `register_chart` for standalone charts or contribute new built-in
+charts upstream.
+:::
 
 ```python
+from nautilus_trader.analysis import TearsheetConfig
+from nautilus_trader.analysis import TearsheetCustomChart
+from nautilus_trader.analysis import TearsheetEquityChart
+from nautilus_trader.analysis import TearsheetStatsTableChart
 from nautilus_trader.analysis.tearsheet import _register_tearsheet_chart
 
 def _render_my_metric(fig, row, col, returns, theme_config, **kwargs):
@@ -354,7 +377,14 @@ _register_tearsheet_chart(
     renderer=_render_my_metric,
 )
 
-# Now "volatility" can be used in TearsheetConfig.charts
+# Now "volatility" can be used in TearsheetConfig.charts:
+config = TearsheetConfig(
+    charts=[
+        TearsheetStatsTableChart(),
+        TearsheetEquityChart(),
+        TearsheetCustomChart(chart="volatility"),
+    ],
+)
 ```
 
 The renderer function receives all necessary data (returns, statistics, theme configuration)
@@ -368,11 +398,11 @@ use the lower-level API:
 ```python
 from nautilus_trader.analysis.tearsheet import create_tearsheet_from_stats
 
-# Load precomputed data
-stats_pnls = {"USD": {...}}  # Per-currency PnL statistics
-stats_returns = {...}         # Returns-based statistics
-stats_general = {...}         # General statistics
-returns = pd.Series(...)      # Returns series
+# Load precomputed data (structure matches PortfolioAnalyzer output)
+stats_pnls = {"USD": {"PnL (total)": 1500.0, "Win Rate": 0.55, ...}}  # Per-currency
+stats_returns = {"Sharpe Ratio (252 days)": 1.2, "Max Drawdown": -0.15, ...}
+stats_general = {"Avg Winner": 100.0, "Avg Loser": -50.0, ...}
+returns = pd.Series(...)  # Daily returns with datetime index
 
 create_tearsheet_from_stats(
     stats_pnls=stats_pnls,
@@ -382,6 +412,8 @@ create_tearsheet_from_stats(
     output_path="offline_analysis.html",
 )
 ```
+
+The dictionary keys should match those returned by `PortfolioAnalyzer.get_performance_stats_*()`.
 
 This approach is useful for:
 
@@ -476,7 +508,12 @@ useful for visually analyzing strategy execution within price action. It can be 
 or included in tearsheets:
 
 ```python
-from nautilus_trader.analysis.tearsheet import create_bars_with_fills
+from nautilus_trader.analysis import create_bars_with_fills
+from nautilus_trader.analysis import create_tearsheet
+from nautilus_trader.analysis import TearsheetBarsWithFillsChart
+from nautilus_trader.analysis import TearsheetConfig
+from nautilus_trader.analysis import TearsheetEquityChart
+from nautilus_trader.analysis import TearsheetStatsTableChart
 from nautilus_trader.model.data import BarType
 
 # Standalone usage
@@ -491,17 +528,39 @@ fig.write_html("bars_with_fills.html")  # Or save to file
 
 # Include in tearsheet
 config = TearsheetConfig(
-    charts=["stats_table", "equity", "bars_with_fills"],
-    chart_args={
-        "bars_with_fills": {"bar_type": "ESM4.XCME-1-MINUTE-LAST-EXTERNAL"},
-    },
+    charts=[
+        TearsheetStatsTableChart(),
+        TearsheetEquityChart(),
+        TearsheetBarsWithFillsChart(
+            bar_type="ESM4.XCME-1-MINUTE-LAST-EXTERNAL",
+            title="Bars with Fills",
+        ),
+    ],
+)
+create_tearsheet(engine=engine, config=config)
+
+# Multiple bars-with-fills charts in one tearsheet
+config = TearsheetConfig(
+    charts=[
+        TearsheetStatsTableChart(),
+        TearsheetEquityChart(),
+        TearsheetBarsWithFillsChart(
+            bar_type=f"{instrument.id}-5-MINUTE-MID-INTERNAL",
+            title=f"Bars with Order Fills - {instrument.id}",
+        ),
+        TearsheetBarsWithFillsChart(
+            bar_type=f"{other_instrument.id}-5-MINUTE-MID-INTERNAL",
+            title=f"Bars with Order Fills - {other_instrument.id}",
+        ),
+    ],
 )
 create_tearsheet(engine=engine, config=config)
 ```
 
-The visualization shows candlesticks for OHLC price action with vertical bars representing order fills
-(colored by buy/sell side). The `chart_args` parameter in `TearsheetConfig` allows passing custom
-arguments to charts that require additional configuration beyond standard tearsheet data.
+The visualization shows candlesticks for OHLC price action with triangle markers representing order
+fills (green up-triangles for buys, red down-triangles for sells). Charts that need extra
+configuration (like `bar_type`) take those parameters directly on the chart object
+(e.g. `TearsheetBarsWithFillsChart(bar_type=...)`).
 
 Other individual chart functions include `create_equity_curve`, `create_drawdown_chart`,
 `create_monthly_returns_heatmap`, and more. See the API reference for the complete list.

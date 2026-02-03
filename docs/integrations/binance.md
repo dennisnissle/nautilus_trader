@@ -126,6 +126,24 @@ Only *limit* order types support `post_only`.
 | Batch Modify       | -    | -      | ✓            | ✓            | Modify multiple orders in single request. Futures only. |
 | Batch Cancel       | ✓    | ✓      | ✓            | ✓            | Cancel multiple orders in single request.    |
 
+#### Cancel all orders behavior
+
+When calling `cancel_all_orders()` from a strategy, the adapter includes orders in both open and inflight (SUBMITTED) states.
+This ensures that orders submitted but not yet acknowledged by Binance are also canceled.
+
+**Multi-strategy safety**: When multiple strategies trade the same instrument, the adapter compares orders owned by the requesting strategy against all orders for that instrument. If the strategy owns all orders, a single cancel-all API call is used. Otherwise, per-strategy cancels are sent (batch for regular orders, individual for algo orders) to avoid affecting other strategies' orders.
+
+**Futures algo orders**: For Binance Futures, conditional order types (STOP_MARKET, STOP_LIMIT, TAKE_PROFIT, TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET) require a different cancel endpoint than regular orders.
+The adapter automatically routes these "algo" orders through the correct endpoint. Once an algo order triggers and becomes a regular order, it uses the standard cancel endpoint.
+
+**Endpoints used**:
+
+| Account Type | Regular Orders                  | Algo Orders (batch)              | Algo Orders (individual)    |
+|--------------|---------------------------------|----------------------------------|-----------------------------|
+| Spot/Margin  | `DELETE /api/v3/openOrders`     | N/A                              | N/A                         |
+| USDT Futures | `DELETE /fapi/v1/allOpenOrders` | `DELETE /fapi/v1/algoOpenOrders` | `DELETE /fapi/v1/algoOrder` |
+| Coin Futures | `DELETE /dapi/v1/allOpenOrders` | `DELETE /dapi/v1/algoOpenOrders` | `DELETE /dapi/v1/algoOrder` |
+
 ### Position management
 
 | Feature              | Spot | Margin | USDT Futures | Coin Futures | Notes                                      |
@@ -262,7 +280,7 @@ WebSocket stream update rates differ between Spot and Futures exchanges, with Na
 highest available streaming rate:
 
 - **Spot**: 100ms
-- **Futures**: 0ms (*unthrottled*)
+- **Futures**: 0ms (unthrottled)
 
 There is a limitation of one order book per instrument per trader instance.
 As stream subscriptions may vary, the latest order book data (deltas or snapshots)
@@ -482,6 +500,46 @@ config = TradingNodeConfig(
 Ed25519 keys must be provided in base64-encoded ASN.1/DER format. The implementation automatically extracts the 32-byte seed from the DER structure.
 :::
 
+#### Generating Ed25519 keys
+
+Ed25519 is required for Binance SBE (Simple Binary Encoding) streams and recommended for all API access due to better performance and security.
+
+**Option 1: OpenSSL (recommended)**
+
+```bash
+# Generate private key (PKCS#8 PEM format)
+openssl genpkey -algorithm ed25519 -out binance_ed25519_private.pem
+
+# Extract public key
+openssl pkey -in binance_ed25519_private.pem -pubout -out binance_ed25519_public.pem
+```
+
+**Option 2: Binance Key Generator**
+
+Download the [Binance Asymmetric Key Generator](https://github.com/binance/asymmetric-key-generator) from the releases page and run it to generate a keypair.
+
+**Registering with Binance**
+
+1. Log in to Binance and go to **Profile** → **API Management**
+2. Click **Create API** and select **Self-generated**
+3. Paste the contents of your public key file (including the `-----BEGIN PUBLIC KEY-----` header/footer)
+4. Configure permissions (Enable Spot & Margin Trading, etc.)
+
+**Using with NautilusTrader**
+
+Set the private key as your API secret:
+
+```bash
+export BINANCE_API_KEY="your-api-key-from-binance"
+export BINANCE_API_SECRET="$(cat binance_ed25519_private.pem)"
+```
+
+Or pass the PEM content directly in your configuration.
+
+:::warning
+Keep your private key secure. Never share it or commit it to version control.
+:::
+
 ### API credentials
 
 There are multiple options for supplying your credentials to the Binance clients.
@@ -688,6 +746,8 @@ To use Binance Future Hedge mode, you need to follow the three items below:
             position_id = PositionId(f"{self.instrument_id}-SHORT")
             self.submit_order(order, position_id)
     ```
+
+## Contributing
 
 :::info
 For additional features or to contribute to the Binance adapter, please see our

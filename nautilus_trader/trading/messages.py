@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -45,7 +45,6 @@ class CreateActor(Command):
         command_id: UUID4 | None = None,
         ts_init: int = 0,
     ) -> None:
-
         super().__init__(command_id or UUID4(), ts_init)
 
         self.actor_config = actor_config
@@ -76,7 +75,6 @@ class CreateStrategy(Command):
         command_id: UUID4 | None = None,
         ts_init: int = 0,
     ) -> None:
-
         super().__init__(command_id or UUID4(), ts_init)
 
         self.strategy_config = strategy_config
@@ -221,6 +219,32 @@ class RemoveStrategy(Command):
     ----------
     strategy_id : StrategyId
         The ID of the strategy to start.
+    command_id : UUID4
+        The command ID.
+    ts_init : int
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+    """
+
+    def __init__(
+        self,
+        strategy_id: StrategyId,
+        command_id: UUID4 | None = None,
+        ts_init: int = 0,
+    ) -> None:
+        super().__init__(command_id or UUID4(), ts_init)
+
+        self.strategy_id = strategy_id
+
+
+class MarketExitStrategy(Command):
+    """
+    Represents a command to exit the market for a strategy.
+
+    Parameters
+    ----------
+    strategy_id : StrategyId
+        The ID of the strategy to exit the market for.
     command_id : UUID4
         The command ID.
     ts_init : int

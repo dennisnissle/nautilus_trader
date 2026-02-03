@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,6 +42,9 @@ from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import StopLimitOrder
+from nautilus_trader.model.orders import StopMarketOrder
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 
 
@@ -86,7 +89,9 @@ class TestExecutionReports:
 
         # Assert
         # When trailing_offset_type is None in Python, it converts to NO_TRAILING_OFFSET in Rust
-        assert pyo3_report.trailing_offset_type == nautilus_pyo3.TrailingOffsetType.NO_TRAILING_OFFSET
+        assert (
+            pyo3_report.trailing_offset_type == nautilus_pyo3.TrailingOffsetType.NO_TRAILING_OFFSET
+        )
         assert pyo3_report.account_id.value == "SIM-001"
         assert pyo3_report.venue_order_id.value == "TEST-001"
         assert pyo3_report.order_side == nautilus_pyo3.OrderSide.BUY
@@ -170,9 +175,11 @@ class TestExecutionReports:
         assert len(pyo3_mass_status.order_reports) == 1
         pyo3_order_report = next(iter(pyo3_mass_status.order_reports.values()))
         # When trailing_offset_type is None in Python, it converts to NO_TRAILING_OFFSET in Rust
-        assert pyo3_order_report.trailing_offset_type == nautilus_pyo3.TrailingOffsetType.NO_TRAILING_OFFSET
+        assert (
+            pyo3_order_report.trailing_offset_type
+            == nautilus_pyo3.TrailingOffsetType.NO_TRAILING_OFFSET
+        )
         assert pyo3_order_report.avg_px == Decimal("0.90050")
-
 
     def test_instantiate_order_status_report(self):
         # Arrange, Act
@@ -378,6 +385,40 @@ class TestExecutionReports:
             repr(report)
             == f"ExecutionMassStatus(client_id=IB, account_id=IB-U123456789, venue=IDEALPRO, order_reports={{}}, fill_reports={{}}, position_reports={{}}, report_id={report_id}, ts_init=0)"
         )
+
+    def test_instantiate_execution_mass_status_with_venue_none(self):
+        """
+        Test ExecutionMassStatus with venue=None for multi-venue brokers like IB.
+        """
+        # Arrange
+        client_id = ClientId("IB")
+        account_id = AccountId("IB-U123456789")  # Account ID contains venue prefix "IB"
+
+        # Act
+        report_id = UUID4()
+        report = ExecutionMassStatus(
+            client_id=client_id,
+            account_id=account_id,
+            venue=None,  # Multi-venue broker, venue derived from account_id
+            report_id=report_id,
+            ts_init=0,
+        )
+
+        # Assert
+        assert report.client_id == client_id
+        assert report.account_id == account_id
+        assert report.venue is None
+        assert report.ts_init == 0
+        assert report.order_reports == {}
+        assert report.position_reports == {}
+
+        # Test that venue is derived from account_id in to_dict()
+        report_dict = report.to_dict()
+        assert report_dict["venue"] == "IB"  # Derived from account_id.get_issuer()
+
+        # Test that venue is derived from account_id in to_pyo3()
+        pyo3_report = report.to_pyo3()
+        assert pyo3_report.venue.value == "IB"  # Derived from account_id.get_issuer()
 
     def test_add_order_status_reports(self):
         # Arrange
@@ -1288,3 +1329,220 @@ class TestExecutionReports:
         assert len(pyo3_mass_status.order_reports) == 1
         assert len(pyo3_mass_status.fill_reports) == 1
         assert len(pyo3_mass_status.position_reports) == 1
+
+    def test_order_status_report_is_order_updated_returns_true_when_price_differs(self):
+        # Arrange
+        order = TestExecStubs.limit_order(price=Price.from_str("1.00000"))
+
+        report = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=order.quantity,
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00100"),  # Different price
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+
+        # Act, Assert
+        assert report.is_order_updated(order) is True
+
+    def test_order_status_report_is_order_updated_returns_true_when_trigger_price_differs(self):
+        # Arrange
+        order = StopMarketOrder(
+            trader_id=TestIdStubs.trader_id(),
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=AUDUSD_IDEALPRO,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_int(100_000),
+            trigger_price=Price.from_str("0.99000"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+
+        report = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.STOP_MARKET,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=order.quantity,
+            filled_qty=Quantity.zero(0),
+            trigger_price=Price.from_str("0.99100"),  # Different trigger price
+            trigger_type=TriggerType.DEFAULT,
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+
+        # Act, Assert
+        assert report.is_order_updated(order) is True
+
+    def test_order_status_report_is_order_updated_returns_true_when_quantity_differs(self):
+        # Arrange
+        order = TestExecStubs.limit_order(
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00000"),
+        )
+
+        report = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(200_000),  # Different quantity
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00000"),
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+
+        # Act, Assert
+        assert report.is_order_updated(order) is True
+
+    def test_order_status_report_is_order_updated_returns_false_when_all_match(self):
+        # Arrange
+        order = TestExecStubs.limit_order(
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00000"),
+        )
+
+        report = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(100_000),  # Same quantity
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00000"),  # Same price
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+
+        # Act, Assert
+        assert report.is_order_updated(order) is False
+
+    def test_order_status_report_is_order_updated_returns_false_when_order_has_no_price(self):
+        # Arrange: Market orders have no price, so only quantity comparison matters
+        order = TestExecStubs.market_order(quantity=Quantity.from_int(100_000))
+
+        report = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            time_in_force=TimeInForce.IOC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(100_000),  # Same quantity
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00000"),  # Report has price, but order doesn't
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+
+        # Act, Assert
+        assert report.is_order_updated(order) is False
+
+    def test_order_status_report_is_order_updated_stop_limit_order_with_both_prices(self):
+        # Arrange
+        order = StopLimitOrder(
+            trader_id=TestIdStubs.trader_id(),
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=AUDUSD_IDEALPRO,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00000"),
+            trigger_price=Price.from_str("0.99000"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Same everything
+        report_same = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.STOP_LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(100_000),
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00000"),
+            trigger_price=Price.from_str("0.99000"),
+            trigger_type=TriggerType.DEFAULT,
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+        assert report_same.is_order_updated(order) is False
+
+        # Different limit price
+        report_diff_price = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.STOP_LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(100_000),
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00100"),  # Different price
+            trigger_price=Price.from_str("0.99000"),
+            trigger_type=TriggerType.DEFAULT,
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+        assert report_diff_price.is_order_updated(order) is True
+
+        # Different trigger price
+        report_diff_trigger = OrderStatusReport(
+            account_id=AccountId("SIM-001"),
+            instrument_id=AUDUSD_IDEALPRO,
+            venue_order_id=VenueOrderId("1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.STOP_LIMIT,
+            time_in_force=TimeInForce.GTC,
+            order_status=OrderStatus.ACCEPTED,
+            quantity=Quantity.from_int(100_000),
+            filled_qty=Quantity.zero(0),
+            price=Price.from_str("1.00000"),
+            trigger_price=Price.from_str("0.99100"),  # Different trigger price
+            trigger_type=TriggerType.DEFAULT,
+            report_id=UUID4(),
+            ts_accepted=1_000_000,
+            ts_last=2_000_000,
+            ts_init=3_000_000,
+        )
+        assert report_diff_trigger.is_order_updated(order) is True

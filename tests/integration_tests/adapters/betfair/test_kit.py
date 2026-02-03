@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -605,6 +605,8 @@ class BetfairStreaming:
         client_order_id: str = "",
         mb: list[MatchedOrder] | None = None,
         ml: list[MatchedOrder] | None = None,
+        market_id: str = "1",
+        selection_id: int = 1,
     ) -> OCM:
         assert side in ("B", "L"), "`side` should be 'B' or 'L'"
         assert isinstance(order_id, int)
@@ -614,10 +616,10 @@ class BetfairStreaming:
             pt=0,
             oc=[
                 OrderMarketChange(
-                    id="1",
+                    id=market_id,
                     orc=[
                         OrderRunnerChange(
-                            id=1,
+                            id=selection_id,
                             uo=[
                                 Order(
                                     id=order_id,
@@ -773,11 +775,13 @@ class BetfairDataProvider:
         assert market_id.startswith("1-")
 
         def _fix_ids(r):
-            return (
-                r.replace(market_id.encode(), b"1-180737206")
-                .replace(runner1.encode(), b"19248890")
-                .replace(runner2.encode(), b"38848248")
-            )
+            # Replace market ID (appears as string in JSON: "id":"1-xxx")
+            result = r.replace(market_id.encode(), b"1-180737206")
+            # Replace runner IDs only when they appear as JSON field values
+            # (after "id": context) to avoid corrupting timestamps
+            result = result.replace(b'"id":' + runner1.encode(), b'"id":19248890')
+            result = result.replace(b'"id":' + runner2.encode(), b'"id":38848248')
+            return result
 
         return [
             stream_decode(_fix_ids(line.strip()))

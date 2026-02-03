@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,30 +27,18 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use nautilus_core::serialization::deserialize_empty_string_as_none;
 use nautilus_model::enums::OrderSide;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-
-/// Deserializes an empty string as None, otherwise as Some(String).
-fn deserialize_empty_string_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    Ok(s.filter(|s| !s.is_empty()))
-}
 use serde_with::{DisplayFromStr, serde_as};
 use ustr::Ustr;
 
 use crate::common::enums::{
     DydxCandleResolution, DydxConditionType, DydxFillType, DydxLiquidity, DydxMarketStatus,
-    DydxOrderExecution, DydxOrderStatus, DydxPositionSide, DydxPositionStatus, DydxTickerType,
-    DydxTimeInForce, DydxTradeType,
+    DydxOrderExecution, DydxOrderStatus, DydxOrderType, DydxPositionSide, DydxPositionStatus,
+    DydxTickerType, DydxTimeInForce, DydxTradeType, DydxTransferType,
 };
-
-////////////////////////////////////////////////////////////////////////////////
-// Markets
-////////////////////////////////////////////////////////////////////////////////
 
 /// Response wrapper for markets endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,15 +56,15 @@ pub struct PerpetualMarket {
     #[serde_as(as = "DisplayFromStr")]
     pub clob_pair_id: u32,
     /// Market ticker (e.g., "BTC-USD").
-    pub ticker: String,
+    pub ticker: Ustr,
     /// Market status (ACTIVE, PAUSED, etc.).
     pub status: DydxMarketStatus,
     /// Base asset symbol (optional, not always returned by API).
     #[serde(default)]
-    pub base_asset: Option<String>,
+    pub base_asset: Option<Ustr>,
     /// Quote asset symbol (optional, not always returned by API).
     #[serde(default)]
-    pub quote_asset: Option<String>,
+    pub quote_asset: Option<Ustr>,
     /// Step size for order quantities (minimum increment).
     #[serde_as(as = "DisplayFromStr")]
     pub step_size: Decimal,
@@ -213,7 +201,7 @@ pub struct Candle {
     /// Candle start time.
     pub started_at: DateTime<Utc>,
     /// Market ticker.
-    pub ticker: String,
+    pub ticker: Ustr,
     /// Candle resolution.
     pub resolution: DydxCandleResolution,
     /// Opening price.
@@ -240,10 +228,6 @@ pub struct Candle {
     #[serde_as(as = "DisplayFromStr")]
     pub starting_open_interest: Decimal,
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Accounts
-////////////////////////////////////////////////////////////////////////////////
 
 /// Response for subaccount endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,7 +275,7 @@ pub struct Subaccount {
 #[serde(rename_all = "camelCase")]
 pub struct PerpetualPosition {
     /// Market ticker.
-    pub market: String,
+    pub market: Ustr,
     /// Position status.
     pub status: DydxPositionStatus,
     /// Position side (determined by size sign).
@@ -385,7 +369,7 @@ pub struct Order {
     pub status: DydxOrderStatus,
     /// Order type (LIMIT, MARKET, etc.).
     #[serde(rename = "type")]
-    pub order_type: String,
+    pub order_type: DydxOrderType,
     /// Time-in-force.
     pub time_in_force: DydxTimeInForce,
     /// Reduce-only flag.
@@ -432,7 +416,7 @@ pub struct Order {
     pub updated_at_height: Option<u64>,
     /// Ticker symbol (e.g., "BTC-USD").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ticker: Option<String>,
+    pub ticker: Option<Ustr>,
     /// Subaccount number.
     #[serde(default)]
     pub subaccount_number: u32,
@@ -465,7 +449,7 @@ pub struct Fill {
     #[serde(rename = "type")]
     pub fill_type: DydxFillType,
     /// Market ticker.
-    pub market: String,
+    pub market: Ustr,
     /// Market type.
     pub market_type: DydxTickerType,
     /// Fill price.
@@ -505,7 +489,7 @@ pub struct Transfer {
     pub id: String,
     /// Transfer type (DEPOSIT, WITHDRAWAL, TRANSFER_OUT, TRANSFER_IN).
     #[serde(rename = "type")]
-    pub transfer_type: String,
+    pub transfer_type: DydxTransferType,
     /// Sender address.
     pub sender: TransferAccount,
     /// Recipient address.
@@ -534,10 +518,6 @@ pub struct TransferAccount {
     pub subaccount_number: u32,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Utility
-////////////////////////////////////////////////////////////////////////////////
-
 /// Response for time endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeResponse {
@@ -559,10 +539,6 @@ pub struct HeightResponse {
     pub time: DateTime<Utc>,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Execution Models (Node API)
-////////////////////////////////////////////////////////////////////////////////
-
 /// Request to place an order via Node API.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -573,7 +549,7 @@ pub struct PlaceOrderRequest {
     /// Client-generated order ID.
     pub client_id: u32,
     /// Order type flags (bitfield for short-term, reduce-only, etc.).
-    pub order_flags: u32,
+    pub order_flags: String,
     /// CLOB pair ID.
     pub clob_pair_id: u32,
     /// Order side.
@@ -617,7 +593,7 @@ pub struct CancelOrderRequest {
     /// CLOB pair ID.
     pub clob_pair_id: u32,
     /// Order flags.
-    pub order_flags: u32,
+    pub order_flags: String,
     /// Good-til-block or good-til-block-time for the cancel.
     pub good_til_block: Option<u32>,
     pub good_til_block_time: Option<u32>,

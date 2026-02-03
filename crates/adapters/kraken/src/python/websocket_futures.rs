@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,37 +15,50 @@
 
 //! Python bindings for the Kraken Futures WebSocket client.
 
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},
-    identifiers::InstrumentId,
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
-use pyo3::prelude::*;
+use pyo3::{IntoPyObjectExt, prelude::*};
 
 use crate::{
     common::{
+        credential::KrakenCredential,
         enums::{KrakenEnvironment, KrakenProductType},
         urls::get_kraken_ws_public_url,
     },
-    websocket::futures::client::{KrakenFuturesWebSocketClient, KrakenFuturesWsMessage},
+    websocket::futures::{client::KrakenFuturesWebSocketClient, messages::KrakenFuturesWsMessage},
 };
 
 #[pymethods]
 impl KrakenFuturesWebSocketClient {
     #[new]
-    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None))]
+    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
     fn py_new(
         environment: Option<KrakenEnvironment>,
         base_url: Option<String>,
         heartbeat_secs: Option<u64>,
+        api_key: Option<String>,
+        api_secret: Option<String>,
     ) -> PyResult<Self> {
         let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
+        let demo = env == KrakenEnvironment::Demo;
         let url = base_url.unwrap_or_else(|| {
             get_kraken_ws_public_url(KrakenProductType::Futures, env).to_string()
         });
+        let credential = KrakenCredential::resolve_futures(api_key, api_secret, demo);
 
-        Ok(KrakenFuturesWebSocketClient::new(url, heartbeat_secs))
+        Ok(Self::with_credentials(url, heartbeat_secs, credential))
+    }
+
+    #[getter]
+    #[pyo3(name = "has_credentials")]
+    #[must_use]
+    pub fn py_has_credentials(&self) -> bool {
+        self.has_credentials()
     }
 
     #[getter]
@@ -60,7 +73,38 @@ impl KrakenFuturesWebSocketClient {
         self.is_closed()
     }
 
-    /// Cache instruments for price precision lookup (bulk replace).
+    #[pyo3(name = "is_active")]
+    fn py_is_active(&self) -> bool {
+        self.is_active()
+    }
+
+    #[pyo3(name = "wait_until_active")]
+    fn py_wait_until_active<'py>(
+        &self,
+        py: Python<'py>,
+        timeout_secs: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .wait_until_active(timeout_secs)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "authenticate")]
+    fn py_authenticate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client.authenticate().await.map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
     #[pyo3(name = "cache_instruments")]
     fn py_cache_instruments(&self, py: Python<'_>, instruments: Vec<Py<PyAny>>) -> PyResult<()> {
         let mut instruments_any = Vec::new();
@@ -72,7 +116,6 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Cache a single instrument for price precision lookup (upsert).
     #[pyo3(name = "cache_instrument")]
     fn py_cache_instrument(&self, py: Python<'_>, instrument: Py<PyAny>) -> PyResult<()> {
         self.cache_instrument(pyobject_to_instrument_any(py, instrument)?);
@@ -102,29 +145,140 @@ impl KrakenFuturesWebSocketClient {
 
             // Take ownership of the receiver
             if let Some(mut rx) = client.take_output_rx() {
-                tokio::spawn(async move {
+                get_runtime().spawn(async move {
                     while let Some(msg) = rx.recv().await {
-                        Python::attach(|py| {
-                            let py_obj = match msg {
-                                KrakenFuturesWsMessage::MarkPrice(update) => {
-                                    data_to_pycapsule(py, Data::from(update))
+                        Python::attach(|py| match msg {
+                            KrakenFuturesWsMessage::MarkPrice(update) => {
+                                let py_obj = data_to_pycapsule(py, Data::from(update));
+                                if let Err(e) = callback.call1(py, (py_obj,)) {
+                                    log::error!("Error calling Python callback: {e}");
                                 }
-                                KrakenFuturesWsMessage::IndexPrice(update) => {
-                                    data_to_pycapsule(py, Data::from(update))
+                            }
+                            KrakenFuturesWsMessage::IndexPrice(update) => {
+                                let py_obj = data_to_pycapsule(py, Data::from(update));
+                                if let Err(e) = callback.call1(py, (py_obj,)) {
+                                    log::error!("Error calling Python callback: {e}");
                                 }
-                                KrakenFuturesWsMessage::Quote(quote) => {
-                                    data_to_pycapsule(py, Data::from(quote))
+                            }
+                            KrakenFuturesWsMessage::FundingRate(update) => {
+                                match update.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert FundingRateUpdate to Python: {e}"
+                                        );
+                                    }
                                 }
-                                KrakenFuturesWsMessage::Trade(trade) => {
-                                    data_to_pycapsule(py, Data::from(trade))
+                            }
+                            KrakenFuturesWsMessage::Quote(quote) => {
+                                let py_obj = data_to_pycapsule(py, Data::from(quote));
+                                if let Err(e) = callback.call1(py, (py_obj,)) {
+                                    log::error!("Error calling Python callback: {e}");
                                 }
-                                KrakenFuturesWsMessage::BookDeltas(deltas) => data_to_pycapsule(
+                            }
+                            KrakenFuturesWsMessage::Trade(trade) => {
+                                let py_obj = data_to_pycapsule(py, Data::from(trade));
+                                if let Err(e) = callback.call1(py, (py_obj,)) {
+                                    log::error!("Error calling Python callback: {e}");
+                                }
+                            }
+                            KrakenFuturesWsMessage::BookDeltas(deltas) => {
+                                let py_obj = data_to_pycapsule(
                                     py,
                                     Data::Deltas(OrderBookDeltas_API::new(deltas)),
-                                ),
-                            };
-                            if let Err(e) = callback.call1(py, (py_obj,)) {
-                                tracing::error!("Error calling Python callback: {e}");
+                                );
+                                if let Err(e) = callback.call1(py, (py_obj,)) {
+                                    log::error!("Error calling Python callback: {e}");
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderAccepted(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderAccepted to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderCanceled(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderCanceled to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderExpired(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderExpired to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderUpdated(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderUpdated to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::OrderStatusReport(report) => {
+                                match (*report).into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderStatusReport to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::FillReport(report) => {
+                                match (*report).into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        if let Err(e) = callback.call1(py, (py_obj,)) {
+                                            log::error!("Error calling Python callback: {e}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to convert FillReport to Python: {e}");
+                                    }
+                                }
+                            }
+                            KrakenFuturesWsMessage::Reconnected => {
+                                log::info!("WebSocket reconnected");
                             }
                         });
                     }
@@ -242,6 +396,23 @@ impl KrakenFuturesWebSocketClient {
         })
     }
 
+    #[pyo3(name = "subscribe_funding_rate")]
+    fn py_subscribe_funding_rate<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_funding_rate(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
     #[pyo3(name = "unsubscribe_book")]
     fn py_unsubscribe_book<'py>(
         &self,
@@ -321,6 +492,122 @@ impl KrakenFuturesWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .unsubscribe_index_price(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_funding_rate")]
+    fn py_unsubscribe_funding_rate<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_funding_rate(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "set_account_id")]
+    fn py_set_account_id(&self, account_id: AccountId) {
+        self.set_account_id(account_id);
+    }
+
+    #[pyo3(name = "cache_client_order")]
+    fn py_cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        venue_order_id: Option<VenueOrderId>,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
+        self.cache_client_order(
+            client_order_id,
+            venue_order_id,
+            instrument_id,
+            trader_id,
+            strategy_id,
+        );
+    }
+
+    #[pyo3(name = "sign_challenge")]
+    fn py_sign_challenge(&self, challenge: &str) -> PyResult<String> {
+        self.sign_challenge(challenge).map_err(to_pyruntime_err)
+    }
+
+    #[pyo3(name = "authenticate_with_challenge")]
+    fn py_authenticate_with_challenge<'py>(
+        &self,
+        py: Python<'py>,
+        challenge: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .authenticate_with_challenge(&challenge)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "set_auth_credentials")]
+    fn py_set_auth_credentials<'py>(
+        &self,
+        py: Python<'py>,
+        original_challenge: String,
+        signed_challenge: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .set_auth_credentials(original_challenge, signed_challenge)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_open_orders")]
+    fn py_subscribe_open_orders<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_open_orders()
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_fills")]
+    fn py_subscribe_fills<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client.subscribe_fills().await.map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_executions")]
+    fn py_subscribe_executions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_executions()
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

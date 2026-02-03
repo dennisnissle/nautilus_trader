@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,6 +26,7 @@ from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.data import OrderBookDelta
@@ -54,7 +55,11 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
 
     @classmethod
     @abstractmethod
-    def from_uri(cls, uri: str, storage_options: dict[str, str] | None = None) -> BaseDataCatalog:
+    def from_uri(
+        cls,
+        uri: str,
+        storage_options: dict[str, str] | None = None,
+    ) -> BaseDataCatalog:
         raise NotImplementedError
 
     # -- QUERIES -----------------------------------------------------------------------------------
@@ -100,14 +105,22 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         instrument_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[InstrumentStatus]:
-        return self.query(data_cls=InstrumentStatus, identifiers=instrument_ids, **kwargs)
+        return self.query(
+            data_cls=InstrumentStatus,
+            identifiers=instrument_ids,
+            **kwargs,
+        )
 
     def instrument_closes(
         self,
         instrument_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[InstrumentClose]:
-        return self.query(data_cls=InstrumentClose, identifiers=instrument_ids, **kwargs)
+        return self.query(
+            data_cls=InstrumentClose,
+            identifiers=instrument_ids,
+            **kwargs,
+        )
 
     def order_book_deltas(
         self,
@@ -124,7 +137,11 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         instrument_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[OrderBookDepth10]:
-        return self.query(data_cls=OrderBookDepth10, identifiers=instrument_ids, **kwargs)
+        return self.query(
+            data_cls=OrderBookDepth10,
+            identifiers=instrument_ids,
+            **kwargs,
+        )
 
     def quote_ticks(
         self,
@@ -140,13 +157,24 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
     ) -> list[TradeTick]:
         return self.query(data_cls=TradeTick, identifiers=instrument_ids, **kwargs)
 
+    def funding_rates(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[FundingRateUpdate]:
+        return self.query(data_cls=FundingRateUpdate, identifiers=instrument_ids, **kwargs)
+
     def bars(
         self,
         bar_types: list[str] | None = None,
         instrument_ids: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Bar]:
-        return self.query(data_cls=Bar, identifiers=(bar_types or instrument_ids), **kwargs)
+        return self.query(
+            data_cls=Bar,
+            identifiers=(bar_types or instrument_ids),
+            **kwargs,
+        )
 
     def custom_data(
         self,
@@ -173,6 +201,14 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         identifiers: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Data]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_first_timestamp(
+        self,
+        data_cls: type,
+        identifier: str | None = None,
+    ) -> pd.Timestamp | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -205,9 +241,17 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         raise NotImplementedError
 
     @abstractmethod
-    def read_live_run(self, instance_id: str, **kwargs: Any) -> list[str] | dict[str, list[Data]]:
+    def read_live_run(
+        self,
+        instance_id: str,
+        **kwargs: Any,
+    ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError
 
     @abstractmethod
-    def read_backtest(self, instance_id: str, **kwargs: Any) -> list[str] | dict[str, list[Data]]:
+    def read_backtest(
+        self,
+        instance_id: str,
+        **kwargs: Any,
+    ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError

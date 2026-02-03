@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,7 +28,7 @@
 //! NautilusTrader's design, architecture, and implementation philosophy prioritizes software correctness and safety at the
 //! highest level, with the aim of supporting mission-critical, trading system backtesting and live deployment workloads.
 //!
-//! # Feature flags
+//! # Feature Flags
 //!
 //! This crate is primarily intended to be built for Python via
 //! [maturin](https://github.com/PyO3/maturin) and therefore provides a broad set of feature flags
@@ -44,6 +44,7 @@
 
 #![warn(rustc::all)]
 #![deny(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![deny(nonstandard_style)]
 #![deny(missing_debug_implementations)]
 #![deny(clippy::missing_errors_doc)]
@@ -108,6 +109,13 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let n = "cryptography";
     let submodule = pyo3::wrap_pymodule!(nautilus_cryptography::python::cryptography);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
+    let n = "execution";
+    let submodule = pyo3::wrap_pymodule!(nautilus_execution::python::execution);
     m.add_wrapped(submodule)?;
     sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
     #[cfg(feature = "cython-compat")]
@@ -180,6 +188,20 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Adapters
     ////////////////////////////////////////////////////////////////////////////////
 
+    let n = "architect";
+    let submodule = pyo3::wrap_pymodule!(nautilus_architect_ax::python::architect);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
+    let n = "binance";
+    let submodule = pyo3::wrap_pymodule!(nautilus_binance::python::binance);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
     let n = "bitmex";
     let submodule = pyo3::wrap_pymodule!(nautilus_bitmex::python::bitmex);
     m.add_wrapped(submodule)?;
@@ -208,6 +230,13 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cython-compat")]
     re_export_module_attributes(m, n)?;
 
+    let n = "deribit";
+    let submodule = pyo3::wrap_pymodule!(nautilus_deribit::python::deribit);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
     let n = "dydx";
     let submodule = pyo3::wrap_pymodule!(nautilus_dydx::python::dydx);
     m.add_wrapped(submodule)?;
@@ -231,6 +260,13 @@ fn _libnautilus(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let n = "okx";
     let submodule = pyo3::wrap_pymodule!(nautilus_okx::python::okx);
+    m.add_wrapped(submodule)?;
+    sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
+    #[cfg(feature = "cython-compat")]
+    re_export_module_attributes(m, n)?;
+
+    let n = "sandbox";
+    let submodule = pyo3::wrap_pymodule!(nautilus_sandbox::python::sandbox);
     m.add_wrapped(submodule)?;
     sys_modules.set_item(format!("{module_name}.{n}"), m.getattr(n)?)?;
     #[cfg(feature = "cython-compat")]

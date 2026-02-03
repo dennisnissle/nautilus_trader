@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -1752,8 +1752,7 @@ async fn test_rapid_consecutive_reconnections() {
         state.drop_next_connection.store(true, Ordering::Relaxed);
 
         // Send a message to trigger the server loop to process the drop flag
-        let trigger_id =
-            InstrumentId::from(format!("{}.BITMEX", trigger_symbols[cycle - 1]).as_str());
+        let trigger_id = InstrumentId::from(format!("{}.BITMEX", trigger_symbols[cycle - 1]));
         let _ = client.subscribe_trades(trigger_id).await;
 
         // Wait for auth call increment to detect reconnection

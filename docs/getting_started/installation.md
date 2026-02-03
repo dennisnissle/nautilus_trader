@@ -235,8 +235,8 @@ The `--depth 1` flag fetches just the latest commit for a faster, lightweight cl
 6. Set environment variables for PyO3 compilation (Linux and macOS only):
 
 ```bash
-# Set the library path for the Python interpreter (in this case Python 3.13.4)
-export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
+# Linux only: Set the library path for the Python interpreter
+export LD_LIBRARY_PATH="$(python -c 'import sys; print(sys.base_prefix)')/lib:$LD_LIBRARY_PATH"
 
 # Set the Python executable path for PyO3
 export PYO3_PYTHON=$(pwd)/.venv/bin/python
@@ -246,8 +246,7 @@ export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
 ```
 
 :::note
-Adjust the Python version and architecture in the `LD_LIBRARY_PATH` to match your system.
-Use `uv python list` to find the exact path for your Python installation.
+The `LD_LIBRARY_PATH` export is Linux-specific and not needed on macOS.
 
 The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
 Without it, tests that depend on PyO3 may fail to locate the Python runtime.
@@ -312,10 +311,13 @@ which differ in their internal bit-width and maximum decimal precision.
 - **Standard-precision**: 64-bit integers with up to 9 decimals of precision, and a smaller value range.
 
 :::note
-By default, the official Python wheels **ship** in high-precision (128-bit) mode on Linux and macOS.
-On Windows, only standard-precision (64-bit) is available due to the lack of native 128-bit integer support.
+By default, the official Python wheels ship in high-precision (128-bit) mode on Linux and macOS.
+On Windows, only standard-precision (64-bit) Python wheels are available because MSVC's C/C++ frontend
+does not support `__int128`, preventing the Cython/FFI layer from handling 128-bit integers.
 
-For the Rust crates, the default is standard-precision unless you explicitly enable the `high-precision` feature flag.
+For pure Rust crates, high-precision works on all platforms (including Windows) since Rust handles
+`i128`/`u128` via software emulation. The default is standard-precision unless you explicitly enable
+the `high-precision` feature flag.
 :::
 
 The performance tradeoff is that standard-precision is ~3–5% faster in typical backtests,

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -23,6 +23,8 @@ use std::{
     },
 };
 
+#[cfg(feature = "python")]
+use nautilus_core::consts::NAUTILUS_PREFIX;
 use nautilus_core::{
     UUID4, UnixNanos,
     correctness::{FAILED, check_valid_string_utf8},
@@ -40,7 +42,7 @@ use ustr::Ustr;
 use super::runtime::get_runtime;
 use crate::{
     runner::TimeEventSender,
-    timer::{TimeEvent, TimeEventCallback, TimeEventHandlerV2},
+    timer::{TimeEvent, TimeEventCallback, TimeEventHandler},
 };
 
 /// A live timer for use with a `LiveClock`.
@@ -135,7 +137,7 @@ impl LiveTimer {
     ///
     /// # Panics
     ///
-    /// Panics if Rust-based callback system is active and no time event sender has been set.
+    /// Panics if using a Rust callback (`Rust` or `RustLocal`) without a `TimeEventSender`.
     #[allow(unused_variables)]
     pub fn start(&mut self) {
         let event_name = self.name;
@@ -220,7 +222,7 @@ impl LiveTimer {
                     TimeEventCallback::Python(ref callback) => {
                         call_python_with_time_event(event, callback);
                     }
-                    TimeEventCallback::Rust(_) => {
+                    TimeEventCallback::Rust(_) | TimeEventCallback::RustLocal(_) => {
                         debug_assert!(
                             sender.is_some(),
                             "LiveTimer with Rust callback requires TimeEventSender"
@@ -228,7 +230,13 @@ impl LiveTimer {
                         let sender = sender
                             .as_ref()
                             .expect("timer event sender was unset for Rust callback system");
-                        let handler = TimeEventHandlerV2::new(event, callback.clone());
+
+                        // TODO: This clone happens on a Tokio worker thread. For `RustLocal`
+                        // callbacks containing `Rc`, this violates thread safety (Rc::clone
+                        // is not thread-safe). The callback should be stored separately and
+                        // looked up by timer name on the receiving thread, rather than being
+                        // cloned here. This affects any code using RustLocal with LiveTimer.
+                        let handler = TimeEventHandler::new(event, callback.clone());
                         sender.send(handler);
                     }
                 }
@@ -279,14 +287,11 @@ fn call_python_with_time_event(event: TimeEvent, callback: &Py<PyAny>) {
 
         match callback.call1(py, (capsule,)) {
             Ok(_) => {}
-            Err(e) => tracing::error!("Error on callback: {e:?}"),
+            Err(e) => eprintln!("{NAUTILUS_PREFIX} Error on callback: {e:?}"),
         }
     });
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::{num::NonZeroU64, sync::Arc};
@@ -298,7 +303,7 @@ mod tests {
     use super::LiveTimer;
     use crate::{
         runner::TimeEventSender,
-        timer::{TimeEventCallback, TimeEventHandlerV2},
+        timer::{TimeEventCallback, TimeEventHandler},
     };
 
     #[rstest]
@@ -345,7 +350,7 @@ mod tests {
         struct NoopSender;
 
         impl TimeEventSender for NoopSender {
-            fn send(&self, _handler: TimeEventHandlerV2) {}
+            fn send(&self, _handler: TimeEventHandler) {}
         }
 
         let sender = Arc::new(NoopSender);

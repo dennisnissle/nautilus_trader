@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,10 +29,11 @@ use std::{
 use ahash::AHashMap;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::{UUID4, consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt};
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce},
+    data::BarType,
+    enums::{AggregationSource, BarAggregation, OrderSide, OrderType, PriceType, TimeInForce},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -59,7 +60,7 @@ use crate::{
             BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
             BybitTriggerDirection, BybitTriggerType, BybitWsOrderRequestOp,
         },
-        parse::{extract_raw_symbol, make_bybit_symbol},
+        parse::{bar_spec_to_bybit_interval, extract_raw_symbol, make_bybit_symbol},
         symbol::BybitSymbol,
         urls::{bybit_ws_private_url, bybit_ws_public_url, bybit_ws_trade_url},
     },
@@ -125,17 +126,18 @@ pub struct BybitWebSocketClient {
     signal: Arc<AtomicBool>,
     task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     subscriptions: SubscriptionState,
-    is_authenticated: Arc<AtomicBool>,
     account_id: Option<AccountId>,
     mm_level: Arc<AtomicU8>,
+    bars_timestamp_on_close: bool,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    bar_types_cache: Arc<DashMap<String, BarType>>,
     funding_cache: FundingCache,
     cancellation_token: CancellationToken,
 }
 
 impl Debug for BybitWebSocketClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BybitWebSocketClient")
+        f.debug_struct(stringify!(BybitWebSocketClient))
             .field("url", &self.url)
             .field("environment", &self.environment)
             .field("product_type", &self.product_type)
@@ -162,10 +164,11 @@ impl Clone for BybitWebSocketClient {
             signal: Arc::clone(&self.signal),
             task_handle: None, // Each clone gets its own task handle
             subscriptions: self.subscriptions.clone(),
-            is_authenticated: Arc::clone(&self.is_authenticated),
             account_id: self.account_id,
             mm_level: Arc::clone(&self.mm_level),
+            bars_timestamp_on_close: self.bars_timestamp_on_close,
             instruments_cache: Arc::clone(&self.instruments_cache),
+            bar_types_cache: Arc::clone(&self.bar_types_cache),
             funding_cache: Arc::clone(&self.funding_cache),
             cancellation_token: self.cancellation_token.clone(),
         }
@@ -214,12 +217,13 @@ impl BybitWebSocketClient {
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
-            is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
+            bar_types_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -262,12 +266,13 @@ impl BybitWebSocketClient {
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
-            is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
+            bar_types_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -310,12 +315,13 @@ impl BybitWebSocketClient {
             signal: Arc::new(AtomicBool::new(false)),
             task_handle: None,
             subscriptions: SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER),
-            is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
+            bar_types_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -326,6 +332,9 @@ impl BybitWebSocketClient {
     /// Returns an error if the underlying WebSocket connection cannot be established,
     /// after retrying multiple times with exponential backoff.
     pub async fn connect(&mut self) -> BybitWsResult<()> {
+        const MAX_RETRIES: u32 = 5;
+        const CONNECTION_TIMEOUT_SECS: u64 = 10;
+
         self.signal.store(false, Ordering::Relaxed);
 
         let (raw_handler, raw_rx) = channel_message_handler();
@@ -344,10 +353,8 @@ impl BybitWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: Self::default_headers(),
-            message_handler: Some(raw_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: Some(ping_msg),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: Some(500),
             reconnect_delay_max_ms: Some(5_000),
@@ -358,9 +365,6 @@ impl BybitWebSocketClient {
 
         // Retry initial connection with exponential backoff to handle transient DNS/network issues
         // TODO: Eventually expose client config options for this
-        const MAX_RETRIES: u32 = 5;
-        const CONNECTION_TIMEOUT_SECS: u64 = 10;
-
         let mut backoff = ExponentialBackoff::new(
             Duration::from_millis(500),
             Duration::from_millis(5000),
@@ -378,35 +382,37 @@ impl BybitWebSocketClient {
 
             match tokio::time::timeout(
                 Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                WebSocketClient::connect(config.clone(), None, vec![], None),
+                WebSocketClient::connect(
+                    config.clone(),
+                    Some(raw_handler.clone()),
+                    Some(ping_handler.clone()),
+                    None,
+                    vec![],
+                    None,
+                ),
             )
             .await
             {
                 Ok(Ok(client)) => {
                     if attempt > 1 {
-                        tracing::info!("WebSocket connection established after {attempt} attempts");
+                        log::info!("WebSocket connection established after {attempt} attempts");
                     }
                     break client;
                 }
                 Ok(Err(e)) => {
                     last_error = e.to_string();
-                    tracing::warn!(
-                        attempt,
-                        max_retries = MAX_RETRIES,
-                        url = %self.url,
-                        error = %last_error,
-                        "WebSocket connection attempt failed"
+                    log::warn!(
+                        "WebSocket connection attempt failed: attempt={attempt}, max_retries={MAX_RETRIES}, url={}, error={last_error}",
+                        self.url
                     );
                 }
                 Err(_) => {
                     last_error = format!(
                         "Connection timeout after {CONNECTION_TIMEOUT_SECS}s (possible DNS resolution failure)"
                     );
-                    tracing::warn!(
-                        attempt,
-                        max_retries = MAX_RETRIES,
-                        url = %self.url,
-                        "WebSocket connection attempt timed out"
+                    log::warn!(
+                        "WebSocket connection attempt timed out: attempt={attempt}, max_retries={MAX_RETRIES}, url={}",
+                        self.url
                     );
                 }
             }
@@ -425,7 +431,7 @@ impl BybitWebSocketClient {
             }
 
             let delay = backoff.next_duration();
-            tracing::debug!(
+            log::debug!(
                 "Retrying in {delay:?} (attempt {}/{MAX_RETRIES})",
                 attempt + 1
             );
@@ -460,12 +466,14 @@ impl BybitWebSocketClient {
         let credential = self.credential.clone();
         let requires_auth = self.requires_auth;
         let funding_cache = Arc::clone(&self.funding_cache);
+        let bar_types_cache = Arc::clone(&self.bar_types_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
+        let bars_timestamp_on_close = self.bars_timestamp_on_close;
         let mm_level = Arc::clone(&self.mm_level);
         let cmd_tx_for_reconnect = cmd_tx.clone();
         let auth_tracker = self.auth_tracker.clone();
-        let is_authenticated = Arc::clone(&self.is_authenticated);
+        let auth_tracker_for_handler = auth_tracker.clone();
 
         let stream_handle = get_runtime().spawn(async move {
             let mut handler = FeedHandler::new(
@@ -475,10 +483,12 @@ impl BybitWebSocketClient {
                 out_tx.clone(),
                 account_id,
                 product_type,
+                bars_timestamp_on_close,
                 mm_level.clone(),
-                auth_tracker,
+                auth_tracker_for_handler,
                 subscriptions.clone(),
                 funding_cache.clone(),
+                bar_types_cache.clone(),
             );
 
             // Helper closure to resubscribe all tracked subscriptions after reconnection
@@ -489,7 +499,10 @@ impl BybitWebSocketClient {
                     return;
                 }
 
-                tracing::debug!(count = topics.len(), "Resubscribing to confirmed subscriptions");
+                log::debug!(
+                    "Resubscribing to confirmed subscriptions: count={}",
+                    topics.len()
+                );
 
                 for topic in &topics {
                     subscriptions.mark_subscribe(topic.as_str());
@@ -509,7 +522,7 @@ impl BybitWebSocketClient {
                 let cmd = HandlerCommand::Subscribe { topics: payloads };
 
                 if let Err(e) = cmd_tx_for_reconnect.send(cmd) {
-                    tracing::error!("Failed to send resubscribe command: {e}");
+                    log::error!("Failed to send resubscribe command: {e}");
                 }
             };
 
@@ -521,7 +534,7 @@ impl BybitWebSocketClient {
                             continue;
                         }
 
-                        tracing::info!("WebSocket reconnected");
+                        log::info!("WebSocket reconnected");
 
                         // Mark all confirmed subscriptions as failed so they transition to pending state
                         let confirmed_topics: Vec<String> = {
@@ -541,7 +554,10 @@ impl BybitWebSocketClient {
                         };
 
                         if !confirmed_topics.is_empty() {
-                            tracing::debug!(count = confirmed_topics.len(), "Marking confirmed subscriptions as pending for replay");
+                            log::debug!(
+                                "Marking confirmed subscriptions as pending for replay: count={}",
+                                confirmed_topics.len()
+                            );
                             for topic in confirmed_topics {
                                 subscriptions.mark_failure(&topic);
                             }
@@ -551,11 +567,14 @@ impl BybitWebSocketClient {
                         funding_cache.write().await.clear();
 
                         if requires_auth {
-                            is_authenticated.store(false, Ordering::Relaxed);
-                            tracing::debug!("Re-authenticating after reconnection");
+                            log::debug!("Re-authenticating after reconnection");
 
                             if let Some(cred) = &credential {
-                                let expires = chrono::Utc::now().timestamp_millis() + WEBSOCKET_AUTH_WINDOW_MS;
+                                // Begin auth attempt so succeed() will update state
+                                let _rx = auth_tracker.begin();
+
+                                let expires = chrono::Utc::now().timestamp_millis()
+                                    + WEBSOCKET_AUTH_WINDOW_MS;
                                 let signature = cred.sign_websocket_auth(expires);
 
                                 let auth_message = BybitAuthRequest {
@@ -570,10 +589,12 @@ impl BybitWebSocketClient {
                                 if let Ok(payload) = serde_json::to_string(&auth_message) {
                                     let cmd = HandlerCommand::Authenticate { payload };
                                     if let Err(e) = cmd_tx_for_reconnect.send(cmd) {
-                                        tracing::error!(error = %e, "Failed to send reconnection auth command");
+                                        log::error!(
+                                            "Failed to send reconnection auth command: error={e}"
+                                        );
                                     }
                                 } else {
-                                    tracing::error!("Failed to serialize reconnection auth message");
+                                    log::error!("Failed to serialize reconnection auth message");
                                 }
                             }
                         }
@@ -581,43 +602,42 @@ impl BybitWebSocketClient {
                         // Unauthenticated sessions resubscribe immediately after reconnection,
                         // authenticated sessions wait for Authenticated message
                         if !requires_auth {
-                            tracing::debug!("No authentication required, resubscribing immediately");
+                            log::debug!("No authentication required, resubscribing immediately");
                             resubscribe_all().await;
                         }
 
                         // Forward to out_tx so caller sees the Reconnected message
                         if out_tx.send(NautilusWsMessage::Reconnected).is_err() {
-                            tracing::debug!("Receiver dropped, stopping");
+                            log::debug!("Receiver dropped, stopping");
                             break;
                         }
                         continue;
                     }
                     Some(NautilusWsMessage::Authenticated) => {
-                        tracing::debug!("Authenticated, resubscribing");
-                        is_authenticated.store(true, Ordering::Relaxed);
+                        log::debug!("Authenticated, resubscribing");
                         resubscribe_all().await;
                         continue;
                     }
                     Some(msg) => {
                         if out_tx.send(msg).is_err() {
-                            tracing::error!("Failed to send message (receiver dropped)");
+                            log::error!("Failed to send message (receiver dropped)");
                             break;
                         }
                     }
                     None => {
                         // Stream ended - check if it's a stop signal
                         if handler.is_stopped() {
-                            tracing::debug!("Stop signal received, ending message processing");
+                            log::debug!("Stop signal received, ending message processing");
                             break;
                         }
                         // Otherwise it's an unexpected stream end
-                        tracing::warn!("WebSocket stream ended unexpectedly");
+                        log::warn!("WebSocket stream ended unexpectedly");
                         break;
                     }
                 }
             }
 
-            tracing::debug!("Handler task exiting");
+            log::debug!("Handler task exiting");
         });
 
         self.task_handle = Some(Arc::new(stream_handle));
@@ -631,13 +651,13 @@ impl BybitWebSocketClient {
 
     /// Disconnects the WebSocket client and stops the background task.
     pub async fn close(&mut self) -> BybitWsResult<()> {
-        tracing::debug!("Starting close process");
+        log::debug!("Starting close process");
 
         self.signal.store(true, Ordering::Relaxed);
 
         let cmd = HandlerCommand::Disconnect;
         if let Err(e) = self.cmd_tx.read().await.send(cmd) {
-            tracing::debug!(
+            log::debug!(
                 "Failed to send disconnect command (handler may already be shut down): {e}"
             );
         }
@@ -645,12 +665,12 @@ impl BybitWebSocketClient {
         if let Some(task_handle) = self.task_handle.take() {
             match Arc::try_unwrap(task_handle) {
                 Ok(handle) => {
-                    tracing::debug!("Waiting for task handle to complete");
+                    log::debug!("Waiting for task handle to complete");
                     match tokio::time::timeout(Duration::from_secs(2), handle).await {
-                        Ok(Ok(())) => tracing::debug!("Task handle completed successfully"),
-                        Ok(Err(e)) => tracing::error!("Task handle encountered an error: {e:?}"),
+                        Ok(Ok(())) => log::debug!("Task handle completed successfully"),
+                        Ok(Err(e)) => log::error!("Task handle encountered an error: {e:?}"),
                         Err(_) => {
-                            tracing::warn!(
+                            log::warn!(
                                 "Timeout waiting for task handle, task may still be running"
                             );
                             // The task will be dropped and should clean up automatically
@@ -658,19 +678,19 @@ impl BybitWebSocketClient {
                     }
                 }
                 Err(arc_handle) => {
-                    tracing::debug!(
+                    log::debug!(
                         "Cannot take ownership of task handle - other references exist, aborting task"
                     );
                     arc_handle.abort();
                 }
             }
         } else {
-            tracing::debug!("No task handle to await");
+            log::debug!("No task handle to await");
         }
 
-        self.is_authenticated.store(false, Ordering::Relaxed);
+        self.auth_tracker.invalidate();
 
-        tracing::debug!("Closed");
+        log::debug!("Closed");
 
         Ok(())
     }
@@ -719,7 +739,7 @@ impl BybitWebSocketClient {
             return Ok(());
         }
 
-        tracing::debug!("Subscribing to topics: {topics:?}");
+        log::debug!("Subscribing to topics: {topics:?}");
 
         // Use reference counting to deduplicate subscriptions
         let mut topics_to_send = Vec::new();
@@ -730,7 +750,7 @@ impl BybitWebSocketClient {
                 self.subscriptions.mark_subscribe(&topic);
                 topics_to_send.push(topic.clone());
             } else {
-                tracing::debug!("Already subscribed to {topic}, skipping duplicate subscription");
+                log::debug!("Already subscribed to {topic}, skipping duplicate subscription");
             }
         }
 
@@ -767,10 +787,10 @@ impl BybitWebSocketClient {
             return Ok(());
         }
 
-        tracing::debug!("Attempting to unsubscribe from topics: {topics:?}");
+        log::debug!("Attempting to unsubscribe from topics: {topics:?}");
 
         if self.signal.load(Ordering::Relaxed) {
-            tracing::debug!("Shutdown signal detected, skipping unsubscribe");
+            log::debug!("Shutdown signal detected, skipping unsubscribe");
             return Ok(());
         }
 
@@ -783,7 +803,7 @@ impl BybitWebSocketClient {
                 self.subscriptions.mark_unsubscribe(&topic);
                 topics_to_send.push(topic.clone());
             } else {
-                tracing::debug!("Topic {topic} still has active subscriptions, not unsubscribing");
+                log::debug!("Topic {topic} still has active subscriptions, not unsubscribing");
             }
         }
 
@@ -805,7 +825,7 @@ impl BybitWebSocketClient {
 
         let cmd = HandlerCommand::Unsubscribe { topics: payloads };
         if let Err(e) = self.cmd_tx.read().await.send(cmd) {
-            tracing::debug!(error = %e, "Failed to send unsubscribe command");
+            log::debug!("Failed to send unsubscribe command: error={e}");
         }
 
         Ok(())
@@ -853,7 +873,7 @@ impl BybitWebSocketClient {
         if let Ok(cmd_tx) = self.cmd_tx.try_read() {
             let cmd = HandlerCommand::UpdateInstrument(instrument);
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::debug!("Failed to send instrument update to handler: {e}");
+                log::debug!("Failed to send instrument update to handler: {e}");
             }
         }
     }
@@ -865,16 +885,16 @@ impl BybitWebSocketClient {
         self.instruments_cache.clear();
         let mut count = 0;
 
-        tracing::debug!("Initializing Bybit instrument cache");
+        log::debug!("Initializing Bybit instrument cache");
 
         for inst in instruments {
             let symbol = inst.symbol().inner();
             self.instruments_cache.insert(symbol, inst.clone());
-            tracing::debug!("Cached instrument: {symbol}");
+            log::debug!("Cached instrument: {symbol}");
             count += 1;
         }
 
-        tracing::info!("Bybit instrument cache initialized with {count} instruments");
+        log::info!("Bybit instrument cache initialized with {count} instruments");
     }
 
     /// Sets the account ID for account message parsing.
@@ -885,6 +905,14 @@ impl BybitWebSocketClient {
     /// Sets the account market maker level.
     pub fn set_mm_level(&self, mm_level: u8) {
         self.mm_level.store(mm_level, Ordering::Relaxed);
+    }
+
+    /// Sets whether bar timestamps should use the close time.
+    ///
+    /// When `true` (default), bar `ts_event` is set to the bar's close time.
+    /// When `false`, bar `ts_event` is set to the bar's open time.
+    pub fn set_bars_timestamp_on_close(&mut self, value: bool) {
+        self.bars_timestamp_on_close = value;
     }
 
     /// Returns a reference to the instruments cache.
@@ -1008,32 +1036,70 @@ impl BybitWebSocketClient {
     /// # References
     ///
     /// <https://bybit-exchange.github.io/docs/v5/websocket/public/kline>
-    pub async fn subscribe_klines(
-        &self,
-        instrument_id: InstrumentId,
-        interval: impl Into<String>,
-    ) -> BybitWsResult<()> {
+    pub async fn subscribe_bars(&self, bar_type: BarType) -> BybitWsResult<()> {
+        let spec = bar_type.spec();
+
+        // Bybit klines are always last-trade OHLC from the exchange
+        if spec.price_type != PriceType::Last {
+            return Err(BybitWsError::ClientError(format!(
+                "Bybit bars only support LAST price type, received {}",
+                spec.price_type
+            )));
+        }
+        if bar_type.aggregation_source() != AggregationSource::External {
+            return Err(BybitWsError::ClientError(format!(
+                "Bybit bars only support EXTERNAL aggregation source, received {}",
+                bar_type.aggregation_source()
+            )));
+        }
+
+        // Reject MINUTE with step >= 60, require HOUR aggregation instead
+        let step = spec.step.get();
+        if spec.aggregation == BarAggregation::Minute && step >= 60 {
+            let hours = step / 60;
+            return Err(BybitWsError::ClientError(format!(
+                "Invalid bar type: {step}-MINUTE not supported, use {hours}-HOUR instead"
+            )));
+        }
+
+        let interval = bar_spec_to_bybit_interval(spec.aggregation, spec.step.get() as u64)
+            .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+
+        let instrument_id = bar_type.instrument_id();
         let raw_symbol = extract_raw_symbol(instrument_id.symbol.as_str());
         let topic = format!(
             "{}.{}.{raw_symbol}",
             BybitWsPublicChannel::Kline.as_ref(),
-            interval.into()
+            interval
         );
+
+        // Coordinate with reference counting to avoid duplicate cache entries
+        if self.subscriptions.get_reference_count(&topic) == 0 {
+            self.bar_types_cache.insert(topic.clone(), bar_type);
+        }
+
         self.subscribe(vec![topic]).await
     }
 
     /// Unsubscribes from kline/candlestick updates for a specific instrument.
-    pub async fn unsubscribe_klines(
-        &self,
-        instrument_id: InstrumentId,
-        interval: impl Into<String>,
-    ) -> BybitWsResult<()> {
+    pub async fn unsubscribe_bars(&self, bar_type: BarType) -> BybitWsResult<()> {
+        let spec = bar_type.spec();
+        let interval = bar_spec_to_bybit_interval(spec.aggregation, spec.step.get() as u64)
+            .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+
+        let instrument_id = bar_type.instrument_id();
         let raw_symbol = extract_raw_symbol(instrument_id.symbol.as_str());
         let topic = format!(
             "{}.{}.{raw_symbol}",
             BybitWsPublicChannel::Kline.as_ref(),
-            interval.into()
+            interval
         );
+
+        // Coordinate with reference counting to preserve cache for other subscribers
+        if self.subscriptions.get_reference_count(&topic) == 1 {
+            self.bar_types_cache.remove(&topic);
+        }
+
         self.unsubscribe(vec![topic]).await
     }
 
@@ -1154,7 +1220,7 @@ impl BybitWebSocketClient {
         strategy_id: StrategyId,
         instrument_id: InstrumentId,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to place orders".to_string(),
             ));
@@ -1189,7 +1255,7 @@ impl BybitWebSocketClient {
         instrument_id: InstrumentId,
         venue_order_id: Option<VenueOrderId>,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to amend orders".to_string(),
             ));
@@ -1225,7 +1291,7 @@ impl BybitWebSocketClient {
         instrument_id: InstrumentId,
         venue_order_id: Option<VenueOrderId>,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to cancel orders".to_string(),
             ));
@@ -1258,14 +1324,14 @@ impl BybitWebSocketClient {
         strategy_id: StrategyId,
         orders: Vec<BybitWsPlaceOrderParams>,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to place orders".to_string(),
             ));
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch place orders called with empty orders list");
+            log::warn!("Batch place orders called with empty orders list");
             return Ok(());
         }
 
@@ -1315,7 +1381,7 @@ impl BybitWebSocketClient {
             };
             let cmd_tx = self.cmd_tx.read().await;
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::error!("Failed to send RegisterBatchPlace command: {e}");
+                log::error!("Failed to send RegisterBatchPlace command: {e}");
             }
         }
 
@@ -1388,14 +1454,14 @@ impl BybitWebSocketClient {
         #[allow(unused_variables)] strategy_id: StrategyId,
         orders: Vec<BybitWsAmendOrderParams>,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to amend orders".to_string(),
             ));
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch amend orders called with empty orders list");
+            log::warn!("Batch amend orders called with empty orders list");
             return Ok(());
         }
 
@@ -1436,14 +1502,14 @@ impl BybitWebSocketClient {
         strategy_id: StrategyId,
         orders: Vec<BybitWsCancelOrderParams>,
     ) -> BybitWsResult<()> {
-        if !self.is_authenticated.load(Ordering::Relaxed) {
+        if !self.auth_tracker.is_authenticated() {
             return Err(BybitWsError::Authentication(
                 "Must be authenticated to cancel orders".to_string(),
             ));
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch cancel orders called with empty orders list");
+            log::warn!("Batch cancel orders called with empty orders list");
             return Ok(());
         }
 
@@ -1516,7 +1582,7 @@ impl BybitWebSocketClient {
             };
             let cmd_tx = self.cmd_tx.read().await;
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::error!("Failed to send RegisterBatchCancel command: {e}");
+                log::error!("Failed to send RegisterBatchCancel command: {e}");
             }
         }
 
@@ -2082,6 +2148,9 @@ impl BybitWebSocketClient {
 
         let payload = serde_json::to_string(&auth_message)?;
 
+        // Begin auth attempt so succeed() will update state
+        let _rx = self.auth_tracker.begin();
+
         self.cmd_tx
             .read()
             .await
@@ -2110,10 +2179,6 @@ impl BybitWebSocketClient {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -2121,15 +2186,14 @@ mod tests {
     use super::*;
     use crate::{
         common::testing::load_test_json,
-        websocket::{handler::FeedHandler, messages::BybitWsMessage},
+        websocket::{classify_bybit_message, messages::BybitWsMessage},
     };
 
     #[rstest]
     fn classify_orderbook_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_orderbook_snapshot.json"))
             .expect("invalid fixture");
-        let message =
-            FeedHandler::classify_bybit_message(&json).expect("expected orderbook message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Orderbook(_)));
     }
 
@@ -2137,7 +2201,7 @@ mod tests {
     fn classify_trade_snapshot() {
         let json: Value =
             serde_json::from_str(&load_test_json("ws_public_trade.json")).expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected trade message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Trade(_)));
     }
 
@@ -2145,7 +2209,7 @@ mod tests {
     fn classify_ticker_linear_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_linear.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerLinear(_)));
     }
 
@@ -2153,7 +2217,7 @@ mod tests {
     fn classify_ticker_option_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_option.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerOption(_)));
     }
 

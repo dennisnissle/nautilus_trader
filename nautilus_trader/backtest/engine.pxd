@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from cpython.datetime cimport datetime
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint32_t
 from libc.stdint cimport uint64_t
 
@@ -29,7 +30,7 @@ from nautilus_trader.common.component cimport Clock
 from nautilus_trader.common.component cimport Logger
 from nautilus_trader.common.component cimport MessageBus
 from nautilus_trader.core.data cimport Data
-from nautilus_trader.core.rust.backtest cimport TimeEventAccumulatorAPI
+from nautilus_trader.core.rust.backtest cimport TimeEventAccumulator_API
 from nautilus_trader.core.rust.core cimport CVec
 from nautilus_trader.core.rust.model cimport AccountType
 from nautilus_trader.core.rust.model cimport AggressorSide
@@ -38,7 +39,9 @@ from nautilus_trader.core.rust.model cimport LiquiditySide
 from nautilus_trader.core.rust.model cimport MarketStatus
 from nautilus_trader.core.rust.model cimport MarketStatusAction
 from nautilus_trader.core.rust.model cimport OmsType
+from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport PriceRaw
+from nautilus_trader.core.rust.model cimport QuantityRaw
 from nautilus_trader.core.rust.model cimport TimeInForce
 from nautilus_trader.core.uuid cimport UUID4
 from nautilus_trader.data.engine cimport DataEngine
@@ -55,6 +58,7 @@ from nautilus_trader.execution.messages cimport ModifyOrder
 from nautilus_trader.execution.messages cimport TradingCommand
 from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
+from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport BookOrder
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
@@ -92,7 +96,7 @@ cdef class BacktestEngine:
     cdef object _config
     cdef Clock _clock
     cdef Logger _log
-    cdef TimeEventAccumulatorAPI _accumulator
+    cdef TimeEventAccumulator_API _accumulator
 
     cdef object _kernel
     cdef UUID4 _instance_id
@@ -118,9 +122,10 @@ cdef class BacktestEngine:
     cdef dict[str, RequestData] _data_requests
     cdef set[str] _backtest_subscription_names
     cdef dict[str, uint64_t] _last_subscription_ts
-    cdef list _response_data
+    cdef list[Data] _response_data
 
     cdef CVec _advance_time(self, uint64_t ts_now)
+    cdef void _flush_accumulator_events(self, uint64_t ts_now)
     cdef void _process_raw_time_event_handlers(
         self,
         CVec raw_handlers,
@@ -170,7 +175,7 @@ cdef class BacktestDataIterator:
     cdef int _single_data_len
     cdef int _single_data_index
     cdef bint _is_single_data
-    cdef dict _data_update_function
+    cdef dict[str, object] _data_update_function
 
     cdef dict[str, object] _stream_iterators
     cdef dict[str, uint64_t] _stream_current_window_start
@@ -189,7 +194,7 @@ cdef class BacktestDataIterator:
     cpdef void _reset_heap(self)
     cpdef void set_index(self, str data_name, int index)
     cpdef bint is_done(self)
-    cpdef dict all_data(self)
+    cpdef dict[str, list[Data]] all_data(self)
     cpdef list[Data] data(self, str data_name)
 
 
@@ -218,7 +223,7 @@ cdef class SimulatedExchange:
     """The account starting balances for each backtest run.\n\n:returns: `bool`"""
     cdef readonly default_leverage
     """The accounts default leverage.\n\n:returns: `Decimal`"""
-    cdef readonly dict leverages
+    cdef readonly dict[InstrumentId, object] leverages
     """The accounts instrument specific leverage configuration.\n\n:returns: `dict[InstrumentId, Decimal]`"""
     cdef readonly MarginModel margin_model
     """The margin calculation model for the exchange.\n\n:returns: `MarginModel`"""
@@ -236,6 +241,8 @@ cdef class SimulatedExchange:
     """If orders with GTD time in force will be supported by the venue.\n\n:returns: `bool`"""
     cdef readonly bint support_contingent_orders
     """If contingent orders will be supported/respected by the venue.\n\n:returns: `bool`"""
+    cdef readonly bint oto_full_trigger
+    """If OTO child orders are released only on full parent fill.\n\n:returns: `bool`"""
     cdef readonly bint use_position_ids
     """If venue position IDs will be generated on order fills.\n\n:returns: `bool`"""
     cdef readonly bint use_random_ids
@@ -244,23 +251,29 @@ cdef class SimulatedExchange:
     """If the `reduce_only` option on orders will be honored.\n\n:returns: `bool`"""
     cdef readonly bint use_message_queue
     """If an internal message queue is being used to sequentially process incoming trading commands.\n\n:returns: `bool`"""
+    cdef readonly bint use_market_order_acks
+    """If OrderAccepted events will be generated for market orders.\n\n:returns: `bool`"""
     cdef readonly bint bar_execution
     """If bars should be processed by the matching engine(s) (and move the market).\n\n:returns: `bool`"""
     cdef readonly bint bar_adaptive_high_low_ordering
     """If the processing order of bar prices is adaptive based on a heuristic.\n\n:returns: `bool`"""
     cdef readonly bint trade_execution
     """If trades should be processed by the matching engine(s) (and move the market).\n\n:returns: `bool`"""
+    cdef readonly bint liquidity_consumption
+    """If liquidity consumption is tracked per price level.\n\n:returns: `bool`"""
+    cdef readonly bint queue_position
+    """If queue position tracking is enabled for limit orders.\n\n:returns: `bool`"""
     cdef readonly uint32_t price_protection_points
     """Defines an exchange-calculated price boundary (in points) to prevent marketable orders from executing at excessively aggressive prices.\n\n:returns: `int`"""
     cdef readonly list modules
     """The simulation modules registered with the exchange.\n\n:returns: `list[SimulationModule]`"""
-    cdef readonly dict instruments
+    cdef readonly dict[InstrumentId, Instrument] instruments
     """The exchange instruments.\n\n:returns: `dict[InstrumentId, Instrument]`"""
 
-    cdef dict _matching_engines
+    cdef dict[InstrumentId, OrderMatchingEngine] _matching_engines
     cdef object _message_queue
-    cdef list _inflight_queue
-    cdef dict _inflight_counter
+    cdef list[tuple[tuple[uint64_t, uint64_t], TradingCommand]] _inflight_queue
+    cdef dict[uint64_t, uint64_t] _inflight_counter
 
 # -- REGISTRATION ---------------------------------------------------------------------------------
 
@@ -276,11 +289,11 @@ cdef class SimulatedExchange:
     cpdef Price best_ask_price(self, InstrumentId instrument_id)
     cpdef OrderBook get_book(self, InstrumentId instrument_id)
     cpdef OrderMatchingEngine get_matching_engine(self, InstrumentId instrument_id)
-    cpdef dict get_matching_engines(self)
-    cpdef dict get_books(self)
-    cpdef list get_open_orders(self, InstrumentId instrument_id=*)
-    cpdef list get_open_bid_orders(self, InstrumentId instrument_id=*)
-    cpdef list get_open_ask_orders(self, InstrumentId instrument_id=*)
+    cpdef dict[InstrumentId, OrderMatchingEngine] get_matching_engines(self)
+    cpdef dict[InstrumentId, OrderBook] get_books(self)
+    cpdef list[Order] get_open_orders(self, InstrumentId instrument_id=*)
+    cpdef list[Order] get_open_bid_orders(self, InstrumentId instrument_id=*)
+    cpdef list[Order] get_open_ask_orders(self, InstrumentId instrument_id=*)
     cpdef Account get_account(self)
 
 # -- COMMANDS -------------------------------------------------------------------------------------
@@ -330,27 +343,28 @@ cdef class OrderMatchingEngine:
     cdef Logger _log
     cdef MessageBus _msgbus
     cdef OrderBook _book
-    cdef OrderBook _opening_auction_book
-    cdef OrderBook _closing_auction_book
     cdef FillModel _fill_model
     cdef FeeModel _fee_model
     cdef InstrumentClose _instrument_close
-    # cdef object _auction_match_algo
     cdef bint _instrument_has_expiration
     cdef bint _reject_stop_orders
     cdef bint _support_gtd_orders
     cdef bint _support_contingent_orders
+    cdef bint _oto_full_trigger
     cdef bint _use_position_ids
     cdef bint _use_random_ids
     cdef bint _use_reduce_only
+    cdef bint _use_market_order_acks
     cdef bint _bar_execution
     cdef bint _bar_adaptive_high_low_ordering
     cdef bint _trade_execution
+    cdef bint _liquidity_consumption
+    cdef bint _queue_position
     cdef uint32_t _price_protection_points
-    cdef dict _account_ids
-    cdef dict _execution_bar_types
-    cdef dict _execution_bar_deltas
-    cdef dict _cached_filled_qty
+    cdef dict[TraderId, AccountId] _account_ids
+    cdef dict[InstrumentId, BarType] _execution_bar_types
+    cdef dict[BarType, object] _execution_bar_deltas
+    cdef dict[ClientOrderId, Quantity] _cached_filled_qty
 
     cdef readonly Venue venue
     """The venue for the matching engine.\n\n:returns: `Venue`"""
@@ -372,12 +386,21 @@ cdef class OrderMatchingEngine:
     """The message bus for the matching engine.\n\n:returns: `MessageBus`"""
 
     cdef MatchingCore _core
+    cdef uint8_t _price_prec
+    cdef uint8_t _size_prec
     cdef bint _has_targets
     cdef PriceRaw _target_bid
     cdef PriceRaw _target_ask
     cdef PriceRaw _target_last
     cdef Bar _last_bid_bar
     cdef Bar _last_ask_bar
+    cdef Quantity _last_trade_size
+    cdef bint _fill_at_market
+    cdef dict[ClientOrderId, tuple[PriceRaw, QuantityRaw]] _queue_ahead
+    cdef dict[ClientOrderId, QuantityRaw] _queue_excess
+    cdef dict[PriceRaw, tuple[QuantityRaw, QuantityRaw]] _bid_consumption
+    cdef dict[PriceRaw, tuple[QuantityRaw, QuantityRaw]] _ask_consumption
+    cdef QuantityRaw _trade_consumption
 
     cdef int _position_count
     cdef int _order_count
@@ -392,9 +415,9 @@ cdef class OrderMatchingEngine:
     cpdef Price best_bid_price(self)
     cpdef Price best_ask_price(self)
     cpdef OrderBook get_book(self)
-    cpdef list get_open_orders(self)
-    cpdef list get_open_bid_orders(self)
-    cpdef list get_open_ask_orders(self)
+    cpdef list[Order] get_open_orders(self)
+    cpdef list[Order] get_open_bid_orders(self)
+    cpdef list[Order] get_open_ask_orders(self)
     cpdef bint order_exists(self, ClientOrderId client_order_id)
 
 # -- DATA PROCESSING ------------------------------------------------------------------------------
@@ -406,20 +429,19 @@ cdef class OrderMatchingEngine:
     cpdef void process_trade_tick(self, TradeTick tick)
     cpdef void process_bar(self, Bar bar)
     cpdef void process_status(self, MarketStatusAction status)
-    cpdef void process_auction_book(self, OrderBook book)
     cpdef void process_instrument_close(self, InstrumentClose close)
     cdef void _process_trade_ticks_from_bar(self, Bar bar)
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size)
     cdef void _process_trade_bar_open(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_high(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_low(self, Bar bar, TradeTick tick)
-    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick)
+    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size=*)
     cdef void _process_quote_ticks_from_bar(self)
     cdef QuoteTick _create_base_quote_tick(self, Quantity bid_size, Quantity ask_size)
     cdef void _process_quote_bar_open(self, QuoteTick tick)
     cdef void _process_quote_bar_high(self, QuoteTick tick)
     cdef void _process_quote_bar_low(self, QuoteTick tick)
-    cdef void _process_quote_bar_close(self, QuoteTick tick)
+    cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size=*, Quantity ask_close_size=*)
 
 # -- TRADING COMMANDS -----------------------------------------------------------------------------
 
@@ -432,13 +454,12 @@ cdef class OrderMatchingEngine:
     cdef void _process_market_to_limit_order(self, MarketToLimitOrder order)
     cdef void _process_limit_order(self, LimitOrder order)
     cdef void _process_stop_market_order(self, StopMarketOrder order)
+    cdef Price _calculate_protection_price(self, OrderSide side)
+    cdef list _filter_fills_by_protection(self, list fills, OrderSide side, Price protection_price)
     cdef void _process_stop_limit_order(self, StopLimitOrder order)
     cdef void _process_market_if_touched_order(self, MarketIfTouchedOrder order)
     cdef void _process_limit_if_touched_order(self, LimitIfTouchedOrder order)
     cdef void _process_trailing_stop_order(self, Order order)
-    cdef void _process_auction_market_order(self, MarketOrder order)
-    cdef void _process_auction_limit_order(self, LimitOrder order)
-    cdef void _process_auction_book_order(self, BookOrder order, TimeInForce time_in_force)
     cdef void _update_limit_order(self, Order order, Quantity qty, Price price)
     cdef void _update_stop_market_order(self, Order order, Quantity qty, Price trigger_price)
     cdef void _update_stop_limit_order(self, Order order, Quantity qty, Price price, Price trigger_price)
@@ -450,29 +471,37 @@ cdef class OrderMatchingEngine:
 # -- ORDER PROCESSING -----------------------------------------------------------------------------
 
     cpdef void iterate(self, uint64_t timestamp_ns, AggressorSide aggressor_side=*)
-    cpdef list determine_limit_price_and_volume(self, Order order)
-    cpdef list determine_market_price_and_volume(self, Order order)
-    cdef list determine_market_fills_with_simulation(self, Order order)
-    cdef list determine_limit_fills_with_simulation(self, Order order)
+    cpdef list[tuple[Price, Quantity]] determine_limit_price_and_volume(self, Order order)
+    cpdef list[tuple[Price, Quantity]] determine_market_price_and_volume(self, Order order)
+    cdef list[tuple[Price, Quantity]] determine_market_fills_with_simulation(self, Order order)
+    cdef list[tuple[Price, Quantity]] determine_limit_fills_with_simulation(self, Order order)
+    cdef list[tuple[Price, Quantity]] _apply_liquidity_consumption(self, list fills, OrderSide order_side, QuantityRaw max_qty_raw=*, list[Price] book_prices=*)
+    cdef Quantity determine_trade_fill_qty(self, Order order)
     cpdef void fill_market_order(self, Order order)
     cpdef void fill_limit_order(self, Order order)
     cdef void _trail_stop_order(self, Order order)
 
+    cdef void _snapshot_queue_position(self, Order order, Price price)
+    cdef void _clear_queue_on_delete(self, PriceRaw deleted_price_raw, OrderSide deleted_side)
+    cdef void _clear_all_queue_positions(self)
+    cdef void _decrement_queue_on_trade(self, PriceRaw price_raw, QuantityRaw trade_size_raw, AggressorSide aggressor_side)
+
     cpdef void apply_fills(
         self,
         Order order,
-        list fills,
+        list[tuple[Price, Quantity]] fills,
         LiquiditySide liquidity_side,
         PositionId venue_position_id=*,
         Position position=*,
+        Price protection_price=*,
     )
     cdef void _generate_spread_leg_fills(
         self,
         Order order,
-        list fills,
+        list[tuple[Price, Quantity]] fills,
         LiquiditySide liquidity_side,
     )
-    cdef dict _calculate_leg_execution_prices(
+    cdef dict[InstrumentId, Price] _calculate_leg_execution_prices(
         self,
         list leg_tuples,
         Price spread_execution_price,

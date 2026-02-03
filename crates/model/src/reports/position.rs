@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -133,9 +133,6 @@ impl Display for PositionStatusReport {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -361,14 +358,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            long_100.signed_decimal_qty,
-            Decimal::from_f64_retain(100.5).unwrap()
-        );
-        assert_eq!(
-            short_200.signed_decimal_qty,
-            Decimal::from_f64_retain(-200.75).unwrap()
-        );
+        assert_eq!(long_100.signed_decimal_qty, dec!(100.5));
+        assert_eq!(short_200.signed_decimal_qty, dec!(-200.75));
     }
 
     #[rstest]

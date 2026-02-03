@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,28 +22,27 @@ use std::sync::{
 
 use ahash::AHashMap;
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
-    live::runner::get_data_event_sender,
+    clients::DataClient,
+    live::{runner::get_data_event_sender, runtime::get_runtime},
     messages::{
         DataEvent,
         data::{
             BarsResponse, DataResponse, InstrumentResponse, InstrumentsResponse, RequestBars,
             RequestInstrument, RequestInstruments, RequestTrades, SubscribeBars,
-            SubscribeBookDeltas, SubscribeBookSnapshots, SubscribeFundingRates,
-            SubscribeIndexPrices, SubscribeInstrument, SubscribeInstruments, SubscribeMarkPrices,
-            SubscribeQuotes, SubscribeTrades, TradesResponse, UnsubscribeBars,
-            UnsubscribeBookDeltas, UnsubscribeBookSnapshots, UnsubscribeFundingRates,
+            SubscribeBookDeltas, SubscribeFundingRates, SubscribeIndexPrices, SubscribeInstrument,
+            SubscribeInstruments, SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades,
+            TradesResponse, UnsubscribeBars, UnsubscribeBookDeltas, UnsubscribeFundingRates,
             UnsubscribeIndexPrices, UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
         },
     },
 };
 use nautilus_core::{
-    MUTEX_POISONED, UnixNanos,
+    MUTEX_POISONED,
+    datetime::datetime_to_unix_nanos,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
-use nautilus_data::client::DataClient;
 use nautilus_model::{
     data::{Data, FundingRateUpdate, OrderBookDeltas_API},
     enums::BookType,
@@ -186,7 +185,7 @@ impl OKXDataClient {
 
     fn send_data(sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>, data: Data) {
         if let Err(e) = sender.send(DataEvent::Data(data)) {
-            tracing::error!("Failed to emit data event: {e}");
+            log::error!("Failed to emit data event: {e}");
         }
     }
 
@@ -194,9 +193,9 @@ impl OKXDataClient {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             if let Err(e) = fut.await {
-                tracing::error!("{context}: {e:?}");
+                log::error!("{context}: {e:?}");
             }
         });
     }
@@ -223,23 +222,28 @@ impl OKXDataClient {
             }
             NautilusWsMessage::AccountUpdate(_)
             | NautilusWsMessage::PositionUpdate(_)
+            | NautilusWsMessage::OrderAccepted(_)
+            | NautilusWsMessage::OrderCanceled(_)
+            | NautilusWsMessage::OrderExpired(_)
             | NautilusWsMessage::OrderRejected(_)
             | NautilusWsMessage::OrderCancelRejected(_)
             | NautilusWsMessage::OrderModifyRejected(_)
+            | NautilusWsMessage::OrderTriggered(_)
+            | NautilusWsMessage::OrderUpdated(_)
             | NautilusWsMessage::ExecutionReports(_) => {
-                tracing::debug!("Ignoring trading message on data client");
+                log::debug!("Ignoring trading message on data client");
             }
             NautilusWsMessage::Error(e) => {
-                tracing::error!("OKX websocket error: {e:?}");
+                log::error!("OKX websocket error: {e:?}");
             }
             NautilusWsMessage::Raw(value) => {
-                tracing::debug!("Unhandled websocket payload: {value:?}");
+                log::debug!("Unhandled websocket payload: {value:?}");
             }
             NautilusWsMessage::Reconnected => {
-                tracing::info!("Websocket reconnected");
+                log::info!("Websocket reconnected");
             }
             NautilusWsMessage::Authenticated => {
-                tracing::debug!("Websocket authenticated");
+                log::debug!("Websocket authenticated");
             }
         }
     }
@@ -251,7 +255,7 @@ fn emit_funding_rates(updates: Vec<FundingRateUpdate>) {
     }
 
     for update in updates {
-        tracing::debug!(
+        log::debug!(
             "Received funding rate update for {} but forwarding is not yet supported",
             update.instrument_id
         );
@@ -264,13 +268,6 @@ fn upsert_instrument(
 ) {
     let mut guard = cache.write().expect(MUTEX_POISONED);
     guard.insert(instrument.id(), instrument);
-}
-
-fn datetime_to_unix_nanos(value: Option<DateTime<Utc>>) -> Option<UnixNanos> {
-    value
-        .and_then(|dt| dt.timestamp_nanos_opt())
-        .and_then(|nanos| u64::try_from(nanos).ok())
-        .map(UnixNanos::from)
 }
 
 fn contract_filter_with_config(config: &OKXDataClientConfig, instrument: &InstrumentAny) -> bool {
@@ -303,27 +300,27 @@ impl DataClient for OKXDataClient {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        tracing::info!(
-            client_id = %self.client_id,
-            vip_level = ?self.vip_level(),
-            instrument_types = ?self.config.instrument_types,
-            is_demo = self.config.is_demo,
-            http_proxy_url = ?self.config.http_proxy_url,
-            ws_proxy_url = ?self.config.ws_proxy_url,
-            "Starting OKX data client"
+        log::info!(
+            "Started: client_id={}, vip_level={:?}, instrument_types={:?}, is_demo={}, http_proxy_url={:?}, ws_proxy_url={:?}",
+            self.client_id,
+            self.vip_level(),
+            self.config.instrument_types,
+            self.config.is_demo,
+            self.config.http_proxy_url,
+            self.config.ws_proxy_url,
         );
         Ok(())
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
-        tracing::info!("Stopping OKX data client {id}", id = self.client_id);
+        log::info!("Stopping {id}", id = self.client_id);
         self.cancellation_token.cancel();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     fn reset(&mut self) -> anyhow::Result<()> {
-        tracing::debug!("Resetting OKX data client {id}", id = self.client_id);
+        log::debug!("Resetting {id}", id = self.client_id);
         self.is_connected.store(false, Ordering::Relaxed);
         self.cancellation_token = CancellationToken::new();
         self.tasks.clear();
@@ -335,7 +332,7 @@ impl DataClient for OKXDataClient {
     }
 
     fn dispose(&mut self) -> anyhow::Result<()> {
-        tracing::debug!("Disposing OKX data client {id}", id = self.client_id);
+        log::debug!("Disposing {id}", id = self.client_id);
         self.stop()
     }
 
@@ -372,7 +369,7 @@ impl DataClient for OKXDataClient {
 
         for instrument in all_instruments {
             if let Err(e) = self.data_sender.send(DataEvent::Instrument(instrument)) {
-                tracing::warn!("Failed to send instrument: {e}");
+                log::warn!("Failed to send instrument: {e}");
             }
         }
 
@@ -398,15 +395,15 @@ impl DataClient for OKXDataClient {
             let sender = self.data_sender.clone();
             let insts = self.instruments.clone();
             let cancel = self.cancellation_token.clone();
-            let handle = tokio::spawn(async move {
+            let handle = get_runtime().spawn(async move {
                 pin_mut!(stream);
                 loop {
                     tokio::select! {
                         Some(message) = stream.next() => {
                             Self::handle_ws_message(message, &sender, &insts);
                         }
-                        _ = cancel.cancelled() => {
-                            tracing::debug!("Public websocket stream task cancelled");
+                        () = cancel.cancelled() => {
+                            log::debug!("Public websocket stream task cancelled");
                             break;
                         }
                     }
@@ -445,15 +442,15 @@ impl DataClient for OKXDataClient {
             let sender = self.data_sender.clone();
             let insts = self.instruments.clone();
             let cancel = self.cancellation_token.clone();
-            let handle = tokio::spawn(async move {
+            let handle = get_runtime().spawn(async move {
                 pin_mut!(stream);
                 loop {
                     tokio::select! {
                         Some(message) = stream.next() => {
                             Self::handle_ws_message(message, &sender, &insts);
                         }
-                        _ = cancel.cancelled() => {
-                            tracing::debug!("Business websocket stream task cancelled");
+                        () = cancel.cancelled() => {
+                            log::debug!("Business websocket stream task cancelled");
                             break;
                         }
                     }
@@ -463,7 +460,7 @@ impl DataClient for OKXDataClient {
         }
 
         self.is_connected.store(true, Ordering::Release);
-        tracing::info!(client_id = %self.client_id, "Connected");
+        log::info!("Connected: client_id={}", self.client_id);
         Ok(())
     }
 
@@ -477,12 +474,12 @@ impl DataClient for OKXDataClient {
         if let Some(ref ws) = self.ws_public
             && let Err(e) = ws.unsubscribe_all().await
         {
-            tracing::warn!("Failed to unsubscribe all from public websocket: {e:?}");
+            log::warn!("Failed to unsubscribe all from public websocket: {e:?}");
         }
         if let Some(ref ws) = self.ws_business
             && let Err(e) = ws.unsubscribe_all().await
         {
-            tracing::warn!("Failed to unsubscribe all from business websocket: {e:?}");
+            log::warn!("Failed to unsubscribe all from business websocket: {e:?}");
         }
 
         // Allow time for unsubscribe confirmations
@@ -498,13 +495,13 @@ impl DataClient for OKXDataClient {
         let handles: Vec<_> = self.tasks.drain(..).collect();
         for handle in handles {
             if let Err(e) = handle.await {
-                tracing::error!("Error joining websocket task: {e}");
+                log::error!("Error joining websocket task: {e}");
             }
         }
 
         self.book_channels.write().expect(MUTEX_POISONED).clear();
         self.is_connected.store(false, Ordering::Release);
-        tracing::info!(client_id = %self.client_id, "Disconnected");
+        log::info!("Disconnected: client_id={}", self.client_id);
         Ok(())
     }
 
@@ -611,29 +608,6 @@ impl DataClient for OKXDataClient {
             "order book delta subscription",
         );
 
-        Ok(())
-    }
-
-    fn subscribe_book_snapshots(&mut self, cmd: &SubscribeBookSnapshots) -> anyhow::Result<()> {
-        if cmd.book_type != BookType::L2_MBP {
-            anyhow::bail!("OKX only supports L2_MBP order book snapshots");
-        }
-        let depth = cmd.depth.map_or(5, |d| d.get());
-        if depth != 5 {
-            anyhow::bail!("OKX only supports depth=5 snapshots");
-        }
-
-        let ws = self.public_ws()?.clone();
-        let instrument_id = cmd.instrument_id;
-
-        self.spawn_ws(
-            async move {
-                ws.subscribe_book_depth5(instrument_id)
-                    .await
-                    .context("books5 subscription")
-            },
-            "order book snapshot subscription",
-        );
         Ok(())
     }
 
@@ -752,7 +726,7 @@ impl DataClient for OKXDataClient {
                         .await
                         .context("book unsubscribe")?,
                     None => {
-                        tracing::warn!(
+                        log::warn!(
                             "Book channel not found for {instrument_id}; unsubscribing fallback channel"
                         );
                         ws.unsubscribe_book(instrument_id)
@@ -763,21 +737,6 @@ impl DataClient for OKXDataClient {
                 Ok(())
             },
             "order book unsubscribe",
-        );
-        Ok(())
-    }
-
-    fn unsubscribe_book_snapshots(&mut self, cmd: &UnsubscribeBookSnapshots) -> anyhow::Result<()> {
-        let ws = self.public_ws()?.clone();
-        let instrument_id = cmd.instrument_id;
-
-        self.spawn_ws(
-            async move {
-                ws.unsubscribe_book_depth5(instrument_id)
-                    .await
-                    .context("book depth5 unsubscribe")
-            },
-            "order book snapshot unsubscribe",
         );
         Ok(())
     }
@@ -872,7 +831,7 @@ impl DataClient for OKXDataClient {
         Ok(())
     }
 
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instruments_cache = self.instruments.clone();
@@ -881,7 +840,7 @@ impl DataClient for OKXDataClient {
         let venue = self.venue();
         let start = request.start;
         let end = request.end;
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -893,7 +852,7 @@ impl DataClient for OKXDataClient {
         let contract_types = self.config.contract_types.clone();
         let instrument_families = self.config.instrument_families.clone();
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             let mut all_instruments = Vec::new();
 
             for inst_type in instrument_types {
@@ -908,7 +867,7 @@ impl DataClient for OKXDataClient {
                     (Some(families), OKXInstrumentType::Option, true) => families.clone(),
                     (Some(families), _, true) => families.clone(),
                     (None, OKXInstrumentType::Option, _) => {
-                        tracing::warn!(
+                        log::warn!(
                             "Skipping OPTION type: instrument_families required but not configured"
                         );
                         continue;
@@ -932,7 +891,7 @@ impl DataClient for OKXDataClient {
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Failed to fetch instruments for {inst_type:?}: {e:?}");
+                            log::error!("Failed to fetch instruments for {inst_type:?}: {e:?}");
                         }
                     }
                 } else {
@@ -955,7 +914,7 @@ impl DataClient for OKXDataClient {
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
+                                log::error!(
                                     "Failed to fetch instruments for {inst_type:?} family {family}: {e:?}"
                                 );
                             }
@@ -976,14 +935,14 @@ impl DataClient for OKXDataClient {
             ));
 
             if let Err(e) = sender.send(DataEvent::Response(response)) {
-                tracing::error!("Failed to send instruments response: {e}");
+                log::error!("Failed to send instruments response: {e}");
             }
         });
 
         Ok(())
     }
 
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instruments = self.instruments.clone();
@@ -992,7 +951,7 @@ impl DataClient for OKXDataClient {
         let client_id = request.client_id.unwrap_or(self.client_id);
         let start = request.start;
         let end = request.end;
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -1003,7 +962,7 @@ impl DataClient for OKXDataClient {
         };
         let contract_types = self.config.contract_types.clone();
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             match http
                 .request_instrument(instrument_id)
                 .await
@@ -1014,14 +973,14 @@ impl DataClient for OKXDataClient {
                     let symbol = inst_id.symbol.as_str();
                     let inst_type = okx_instrument_type_from_symbol(symbol);
                     if !instrument_types.contains(&inst_type) {
-                        tracing::error!(
+                        log::error!(
                             "Instrument {instrument_id} type {inst_type:?} not in configured types {instrument_types:?}"
                         );
                         return;
                     }
 
                     if !contract_filter_with_config_types(contract_types.as_ref(), &instrument) {
-                        tracing::error!(
+                        log::error!(
                             "Instrument {instrument_id} filtered out by contract_types config"
                         );
                         return;
@@ -1041,17 +1000,17 @@ impl DataClient for OKXDataClient {
                     )));
 
                     if let Err(e) = sender.send(DataEvent::Response(response)) {
-                        tracing::error!("Failed to send instrument response: {e}");
+                        log::error!("Failed to send instrument response: {e}");
                     }
                 }
-                Err(e) => tracing::error!("Instrument request failed: {e:?}"),
+                Err(e) => log::error!("Instrument request failed: {e:?}"),
             }
         });
 
         Ok(())
     }
 
-    fn request_trades(&self, request: &RequestTrades) -> anyhow::Result<()> {
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instrument_id = request.instrument_id;
@@ -1060,12 +1019,12 @@ impl DataClient for OKXDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             match http
                 .request_trades(instrument_id, start, end, limit)
                 .await
@@ -1083,17 +1042,17 @@ impl DataClient for OKXDataClient {
                         params,
                     ));
                     if let Err(e) = sender.send(DataEvent::Response(response)) {
-                        tracing::error!("Failed to send trades response: {e}");
+                        log::error!("Failed to send trades response: {e}");
                     }
                 }
-                Err(e) => tracing::error!("Trade request failed: {e:?}"),
+                Err(e) => log::error!("Trade request failed: {e:?}"),
             }
         });
 
         Ok(())
     }
 
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let bar_type = request.bar_type;
@@ -1102,12 +1061,12 @@ impl DataClient for OKXDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             match http
                 .request_bars(bar_type, start, end, limit)
                 .await
@@ -1125,10 +1084,10 @@ impl DataClient for OKXDataClient {
                         params,
                     ));
                     if let Err(e) = sender.send(DataEvent::Response(response)) {
-                        tracing::error!("Failed to send bars response: {e}");
+                        log::error!("Failed to send bars response: {e}");
                     }
                 }
-                Err(e) => tracing::error!("Bar request failed: {e:?}"),
+                Err(e) => log::error!("Bar request failed: {e:?}"),
             }
         });
 

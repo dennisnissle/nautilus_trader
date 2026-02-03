@@ -49,7 +49,7 @@ To build with Cap'n Proto serialization enabled:
 cargo build -p nautilus-serialization --features capnp
 ```
 
-The Cap'n Proto compiler can be installed from [capnproto.org](https://capnproto.org/install.html).
+The Cap'n Proto compiler is required. See the [Environment Setup](../../docs/developer_guide/environment_setup.md#capn-proto) guide for installation instructions. The required version is specified in the `capnp-version` file in the repository root.
 
 ## Cap'n Proto schemas
 
@@ -142,7 +142,7 @@ This crate supports three serialization formats for market data types. Choose th
 
 | Format       | Serialize | Deserialize | Size      | Use case                                    |
 |--------------|-----------|-------------|-----------|---------------------------------------------|
-| Cap'n Proto  | ~267ns    | ~530ns      | 264 bytes | High-frequency data streams, IPC, caching.  |
+| Cap'n Proto  | ~267ns    | ~350ns      | 264 bytes | High-frequency data streams, IPC, caching.  |
 | JSON         | ~332ns    | ~779ns      | 174 bytes | Human-readable output, debugging, APIs.     |
 | MsgPack      | ~375ns    | ~634ns      | 134 bytes | Compact storage, network transmission.      |
 | Arrow        | TBD       | TBD         | Columnar  | Batch processing, Parquet, IPC, analytics.  |
@@ -251,4 +251,4 @@ For more information, visit <https://nautilustrader.io>.
 
 <img src="https://github.com/nautechsystems/nautilus_trader/raw/develop/assets/nautilus-logo-white.png" alt="logo" width="400" height="auto"/>
 
-© 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+© 2015-2026 Nautech Systems Pty Ltd. All rights reserved.

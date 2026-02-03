@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,9 @@ from py_clob_client.client import ClobClient
 
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.common.gamma_markets import list_markets
-from nautilus_trader.adapters.polymarket.common.gamma_markets import normalize_gamma_market_to_clob_format
+from nautilus_trader.adapters.polymarket.common.gamma_markets import (
+    normalize_gamma_market_to_clob_format,
+)
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_token_id
@@ -94,7 +96,34 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         self._encoder = msgspec.json.Encoder()
 
     async def load_all_async(self, filters: dict | None = None) -> None:
-        await self._load_markets([], filters)
+        if self._config.use_gamma_markets:
+            await self._load_all_using_gamma_markets(filters)
+        else:
+            await self._load_markets([], filters)
+
+    async def _load_all_using_gamma_markets(self, filters: dict | None = None) -> None:
+        filters = filters.copy() if filters is not None else {}
+
+        self._log.info(f"Loading all instruments via Gamma API with filters {filters}...")
+
+        markets = await list_markets(http_client=self._http_client, filters=filters)
+        self._log.info(f"Loaded {len(markets)} markets from Gamma API")
+
+        for market in markets:
+            condition_id = market.get("conditionId")
+            if not condition_id:
+                continue
+
+            normalized_market = normalize_gamma_market_to_clob_format(market)
+
+            for token_info in normalized_market.get("tokens", []):
+                token_id = token_info["token_id"]
+                if not token_id:
+                    self._log.warning(f"Market {condition_id} had an empty token")
+                    continue
+
+                outcome = token_info["outcome"]
+                self._load_instrument(normalized_market, token_id, outcome)
 
     async def _load_ids_using_gamma_markets(
         self,
@@ -113,11 +142,17 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
 
-        if len(condition_ids) <= 100:  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
-            self._log.info(f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using direct condition_id filtering")
+        if (
+            len(condition_ids) <= 100
+        ):  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
+            self._log.info(
+                f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using direct condition_id filtering",
+            )
             filters["condition_ids"] = condition_ids
         else:
-            self._log.info(f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using bulk load of all markets")
+            self._log.info(
+                f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using bulk load of all markets",
+            )
 
         markets = await list_markets(http_client=self._http_client, filters=filters)
         self._log.info(f"Loaded {len(markets)} markets using Gamma API")
@@ -244,6 +279,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
 
+        self._warn_unsupported_clob_filters(filters)
+
         if instrument_ids:
             instruments_str = "instruments: " + ", ".join([str(x) for x in instrument_ids])
         else:
@@ -311,3 +348,12 @@ class PolymarketInstrumentProvider(InstrumentProvider):
 
         self.add(instrument)
         return instrument
+
+    def _warn_unsupported_clob_filters(self, filters: dict) -> None:
+        gamma_only_filters = {"end_date_min", "end_date_max", "start_date_min", "start_date_max"}
+        unsupported = gamma_only_filters & filters.keys()
+        if unsupported:
+            self._log.warning(
+                f"Filters {unsupported} are ignored by CLOB API; "
+                "set use_gamma_markets=True to enable server-side filtering",
+            )

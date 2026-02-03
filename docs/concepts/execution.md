@@ -42,34 +42,22 @@ individual order parameters (as explained below).
 
 This diagram illustrates message flow (commands and events) across the Nautilus execution components.
 
-```
-                  ┌───────────────────┐
-                  │                   │
-                  │                   │
-                  │                   │
-          ┌───────►   OrderEmulator   ├────────────┐
-          │       │                   │            │
-          │       │                   │            │
-          │       │                   │            │
-┌─────────┴──┐    └─────▲──────┬──────┘            │
-│            │          │      │           ┌───────▼────────┐   ┌─────────────────────┐   ┌─────────────────────┐
-│            │          │      │           │                │   │                     │   │                     │
-│            ├──────────┼──────┼───────────►                ├───►                     ├───►                     │
-│  Strategy  │          │      │           │                │   │                     │   │                     │
-│            │          │      │           │   RiskEngine   │   │   ExecutionEngine   │   │   ExecutionClient   │
-│            ◄──────────┼──────┼───────────┤                ◄───┤                     ◄───┤                     │
-│            │          │      │           │                │   │                     │   │                     │
-│            │          │      │           │                │   │                     │   │                     │
-└─────────┬──┘    ┌─────┴──────▼──────┐    └───────▲────────┘   └─────────────────────┘   └─────────────────────┘
-          │       │                   │            │
-          │       │                   │            │
-          │       │                   │            │
-          └───────►   ExecAlgorithm   ├────────────┘
-                  │                   │
-                  │                   │
-                  │                   │
-                  └───────────────────┘
+```mermaid
+flowchart LR
+    strategy[Strategy]
+    emulator[OrderEmulator]
+    algo[ExecAlgorithm]
+    risk[RiskEngine]
+    engine[ExecutionEngine]
+    client[ExecutionClient]
 
+    strategy <--> emulator
+    strategy <--> algo
+    strategy <--> risk
+    emulator --> risk
+    algo --> risk
+    risk <--> engine
+    engine <--> client
 ```
 
 ## Order Management System (OMS)
@@ -273,7 +261,12 @@ Each of these methods takes the primary (original) `Order` as the first argument
 quantity will be reduced by the `quantity` passed in (becoming the spawned orders quantity).
 
 :::warning
-There must be enough primary order quantity remaining (this is validated).
+The spawned quantity must not exceed the primary order's `leaves_qty` (remaining unfilled quantity).
+:::
+
+:::note
+If a spawned order is denied or rejected before acceptance, the deducted quantity is automatically
+restored to the primary order. Once accepted by the venue, the reduction is considered committed.
 :::
 
 Once the desired number of secondary orders have been spawned, and the execution routine is over,
@@ -509,3 +502,9 @@ When `allow_overfills=False` (the default), rejected fills may cause position di
 between the system and the venue. Use the [reconciliation](live.md#execution-reconciliation)
 features to detect and resolve such discrepancies.
 :::
+
+## Related guides
+
+- [Orders](orders.md) - Order types and management.
+- [Positions](positions.md) - Position tracking from executions.
+- [Strategies](strategies.md) - Order submission from strategies.

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,9 +28,9 @@ impl KrakenEnvironment {
     }
 
     #[classattr]
-    #[pyo3(name = "TESTNET")]
-    fn py_testnet() -> Self {
-        Self::Testnet
+    #[pyo3(name = "DEMO")]
+    fn py_demo() -> Self {
+        Self::Demo
     }
 }
 

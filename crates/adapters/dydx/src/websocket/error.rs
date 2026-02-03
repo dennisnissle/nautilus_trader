@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,15 +15,14 @@
 
 //! Error types for dYdX WebSocket operations.
 
-use std::fmt::{self, Display};
+use std::fmt::Display;
 
 use nautilus_network::error::SendError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use super::enums::DydxWsChannel;
-use crate::schemas::ws::DydxWsMessageType;
+use super::enums::{DydxWsChannel, DydxWsMessageType};
 
 /// Result type for dYdX WebSocket operations.
 pub type DydxWsResult<T> = Result<T, DydxWsError>;
@@ -139,7 +138,7 @@ impl DydxWebSocketError {
 }
 
 impl Display for DydxWebSocketError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{} (channel: {:?}, id: {:?})",

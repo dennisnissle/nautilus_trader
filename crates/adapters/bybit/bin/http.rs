@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -39,9 +39,7 @@ use nautilus_bybit::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    nautilus_common::logging::ensure_logging_initialized();
 
     println!("=== Bybit HTTP Client Demo ===\n");
 
@@ -196,7 +194,18 @@ async fn test_authenticated_endpoints(api_key: &str, api_secret: &str) -> anyhow
     // Test 1: Get open orders
     println!("\n1. Testing GET /v5/order/realtime (open orders)");
     match client
-        .get_open_orders(BybitProductType::Linear, Some("BTCUSDT"))
+        .get_open_orders(
+            BybitProductType::Linear,
+            Some("BTCUSDT".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
     {
         Ok(response) => {

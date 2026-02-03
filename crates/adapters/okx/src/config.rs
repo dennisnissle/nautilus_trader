@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -102,16 +102,22 @@ impl OKXDataClientConfig {
         Self::default()
     }
 
-    /// Returns `true` when all API credential fields are populated.
+    /// Returns `true` when all API credential fields are available (in config or env vars).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        self.api_key.is_some() && self.api_secret.is_some() && self.api_passphrase.is_some()
+        let has_key = self.api_key.is_some() || std::env::var("OKX_API_KEY").is_ok();
+        let has_secret = self.api_secret.is_some() || std::env::var("OKX_API_SECRET").is_ok();
+        let has_passphrase =
+            self.api_passphrase.is_some() || std::env::var("OKX_API_PASSPHRASE").is_ok();
+        has_key && has_secret && has_passphrase
     }
 
     /// Returns the HTTP base URL, falling back to the default when unset.
     #[must_use]
     pub fn http_base_url(&self) -> String {
-        self.base_url_http.clone().unwrap_or_else(get_http_base_url)
+        self.base_url_http
+            .clone()
+            .unwrap_or_else(|| get_http_base_url().to_string())
     }
 
     /// Returns the public WebSocket URL, respecting the demo flag and overrides.
@@ -119,7 +125,7 @@ impl OKXDataClientConfig {
     pub fn ws_public_url(&self) -> String {
         self.base_url_ws_public
             .clone()
-            .unwrap_or_else(|| get_ws_base_url_public(self.is_demo))
+            .unwrap_or_else(|| get_ws_base_url_public(self.is_demo).to_string())
     }
 
     /// Returns the business WebSocket URL, respecting the demo flag and overrides.
@@ -127,7 +133,7 @@ impl OKXDataClientConfig {
     pub fn ws_business_url(&self) -> String {
         self.base_url_ws_business
             .clone()
-            .unwrap_or_else(|| get_ws_base_url_business(self.is_demo))
+            .unwrap_or_else(|| get_ws_base_url_business(self.is_demo).to_string())
     }
 
     /// Returns `true` when the business WebSocket should be instantiated.
@@ -226,16 +232,22 @@ impl OKXExecClientConfig {
         Self::default()
     }
 
-    /// Returns `true` when all API credential fields are populated.
+    /// Returns `true` when all API credential fields are available (in config or env vars).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        self.api_key.is_some() && self.api_secret.is_some() && self.api_passphrase.is_some()
+        let has_key = self.api_key.is_some() || std::env::var("OKX_API_KEY").is_ok();
+        let has_secret = self.api_secret.is_some() || std::env::var("OKX_API_SECRET").is_ok();
+        let has_passphrase =
+            self.api_passphrase.is_some() || std::env::var("OKX_API_PASSPHRASE").is_ok();
+        has_key && has_secret && has_passphrase
     }
 
     /// Returns the HTTP base URL, falling back to the default when unset.
     #[must_use]
     pub fn http_base_url(&self) -> String {
-        self.base_url_http.clone().unwrap_or_else(get_http_base_url)
+        self.base_url_http
+            .clone()
+            .unwrap_or_else(|| get_http_base_url().to_string())
     }
 
     /// Returns the private WebSocket URL, respecting the demo flag and overrides.
@@ -243,7 +255,7 @@ impl OKXExecClientConfig {
     pub fn ws_private_url(&self) -> String {
         self.base_url_ws_private
             .clone()
-            .unwrap_or_else(|| get_ws_base_url_private(self.is_demo))
+            .unwrap_or_else(|| get_ws_base_url_private(self.is_demo).to_string())
     }
 
     /// Returns the business WebSocket URL, respecting the demo flag and overrides.
@@ -251,6 +263,6 @@ impl OKXExecClientConfig {
     pub fn ws_business_url(&self) -> String {
         self.base_url_ws_business
             .clone()
-            .unwrap_or_else(|| get_ws_base_url_business(self.is_demo))
+            .unwrap_or_else(|| get_ws_base_url_business(self.is_demo).to_string())
     }
 }

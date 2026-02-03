@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -432,9 +432,9 @@ impl Order for MarketToLimitOrder {
 
         self.core.apply(event)?;
 
-        if is_order_filled && self.price.is_some() {
-            self.core.set_slippage(self.price.unwrap());
-        };
+        if is_order_filled && let Some(price) = self.price {
+            self.core.set_slippage(price);
+        }
 
         Ok(())
     }
@@ -558,9 +558,6 @@ impl From<OrderInitialized> for MarketToLimitOrder {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use rstest::rstest;

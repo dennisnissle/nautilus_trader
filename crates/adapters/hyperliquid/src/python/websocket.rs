@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,34 +15,27 @@
 
 //! Python bindings for the Hyperliquid WebSocket client.
 
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
-    identifiers::{AccountId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{conversion::IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
 
-use crate::{
-    common::HyperliquidProductType,
-    websocket::{
-        HyperliquidWebSocketClient,
-        messages::{ExecutionReport, NautilusWsMessage},
-    },
+use crate::websocket::{
+    HyperliquidWebSocketClient,
+    messages::{ExecutionReport, NautilusWsMessage},
 };
 
 #[pymethods]
 impl HyperliquidWebSocketClient {
     #[new]
-    #[pyo3(signature = (url=None, testnet=false, product_type=HyperliquidProductType::Perp, account_id=None))]
-    fn py_new(
-        url: Option<String>,
-        testnet: bool,
-        product_type: HyperliquidProductType,
-        account_id: Option<String>,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (url=None, testnet=false, account_id=None))]
+    fn py_new(url: Option<String>, testnet: bool, account_id: Option<String>) -> PyResult<Self> {
         let account_id = account_id.map(|s| AccountId::from(s.as_str()));
-        Ok(Self::new(url, testnet, product_type, account_id))
+        Ok(Self::new(url, testnet, account_id))
     }
 
     #[getter]
@@ -62,6 +55,21 @@ impl HyperliquidWebSocketClient {
         !self.is_active()
     }
 
+    #[pyo3(name = "cache_spot_fill_coins")]
+    fn py_cache_spot_fill_coins(&self, mapping: std::collections::HashMap<String, String>) {
+        let ahash_mapping: ahash::AHashMap<ustr::Ustr, ustr::Ustr> = mapping
+            .into_iter()
+            .map(|(k, v)| (ustr::Ustr::from(&k), ustr::Ustr::from(&v)))
+            .collect();
+        self.cache_spot_fill_coins(ahash_mapping);
+    }
+
+    /// Cache a cloid (hex hash) to client_order_id mapping for order/fill resolution.
+    #[pyo3(name = "cache_cloid_mapping")]
+    fn py_cache_cloid_mapping(&self, cloid: String, client_order_id: ClientOrderId) {
+        self.cache_cloid_mapping(ustr::Ustr::from(&cloid), client_order_id);
+    }
+
     #[pyo3(name = "connect")]
     fn py_connect<'py>(
         &self,
@@ -79,13 +87,13 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client.connect().await.map_err(to_pyruntime_err)?;
 
-            tokio::spawn(async move {
+            get_runtime().spawn(async move {
                 loop {
                     let event = client.next_event().await;
 
                     match event {
                         Some(msg) => {
-                            tracing::trace!("Received WebSocket message: {msg:?}");
+                            log::trace!("Received WebSocket message: {msg:?}");
 
                             match msg {
                                 NautilusWsMessage::Trades(trade_ticks) => {
@@ -93,9 +101,8 @@ impl HyperliquidWebSocketClient {
                                         for tick in trade_ticks {
                                             let py_obj = data_to_pycapsule(py, Data::Trade(tick));
                                             if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                                tracing::error!(
-                                                    "Error calling Python callback: {}",
-                                                    e
+                                                log::error!(
+                                                    "Error calling Python callback: {e}"
                                                 );
                                             }
                                         }
@@ -105,7 +112,7 @@ impl HyperliquidWebSocketClient {
                                     Python::attach(|py| {
                                         let py_obj = data_to_pycapsule(py, Data::Quote(quote_tick));
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -116,7 +123,7 @@ impl HyperliquidWebSocketClient {
                                             Data::Deltas(OrderBookDeltas_API::new(deltas)),
                                         );
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -124,7 +131,7 @@ impl HyperliquidWebSocketClient {
                                     Python::attach(|py| {
                                         let py_obj = data_to_pycapsule(py, Data::Bar(bar));
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -135,7 +142,7 @@ impl HyperliquidWebSocketClient {
                                             Data::MarkPriceUpdate(mark_price),
                                         );
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -146,7 +153,7 @@ impl HyperliquidWebSocketClient {
                                             Data::IndexPriceUpdate(index_price),
                                         );
                                         if let Err(e) = callback.bind(py).call1((py_obj,)) {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -155,7 +162,7 @@ impl HyperliquidWebSocketClient {
                                         if let Ok(py_obj) = funding_rate.into_py_any(py)
                                             && let Err(e) = callback.bind(py).call1((py_obj,))
                                         {
-                                            tracing::error!("Error calling Python callback: {}", e);
+                                            log::error!("Error calling Python callback: {e}");
                                         }
                                     });
                                 }
@@ -164,7 +171,7 @@ impl HyperliquidWebSocketClient {
                                         for report in reports {
                                             match report {
                                                 ExecutionReport::Order(order_report) => {
-                                                    tracing::debug!(
+                                                    log::debug!(
                                                         "Forwarding order status report: order_id={}, status={:?}",
                                                         order_report.venue_order_id,
                                                         order_report.order_status
@@ -174,22 +181,16 @@ impl HyperliquidWebSocketClient {
                                                             if let Err(e) =
                                                                 callback.bind(py).call1((py_obj,))
                                                             {
-                                                                tracing::error!(
-                                                                    "Error calling Python callback: {}",
-                                                                    e
-                                                                );
+                                                                log::error!("Error calling Python callback: {e}");
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            tracing::error!(
-                                                                "Error converting OrderStatusReport to Python: {}",
-                                                                e
-                                                            );
+                                                            log::error!("Error converting OrderStatusReport to Python: {e}");
                                                         }
                                                     }
                                                 }
                                                 ExecutionReport::Fill(fill_report) => {
-                                                    tracing::debug!(
+                                                    log::debug!(
                                                         "Forwarding fill report: trade_id={}, side={:?}, qty={}, price={}",
                                                         fill_report.trade_id,
                                                         fill_report.order_side,
@@ -201,17 +202,11 @@ impl HyperliquidWebSocketClient {
                                                             if let Err(e) =
                                                                 callback.bind(py).call1((py_obj,))
                                                             {
-                                                                tracing::error!(
-                                                                    "Error calling Python callback: {}",
-                                                                    e
-                                                                );
+                                                                log::error!("Error calling Python callback: {e}");
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            tracing::error!(
-                                                                "Error converting FillReport to Python: {}",
-                                                                e
-                                                            );
+                                                            log::error!("Error converting FillReport to Python: {e}");
                                                         }
                                                     }
                                                 }
@@ -220,12 +215,12 @@ impl HyperliquidWebSocketClient {
                                     });
                                 }
                                 _ => {
-                                    tracing::debug!("Unhandled message type: {:?}", msg);
+                                    log::debug!("Unhandled message type: {msg:?}");
                                 }
                             }
                         }
                         None => {
-                            tracing::info!("WebSocket connection closed");
+                            log::info!("WebSocket connection closed");
                             break;
                         }
                     }
@@ -268,7 +263,7 @@ impl HyperliquidWebSocketClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             if let Err(e) = client.disconnect().await {
-                tracing::error!("Error on close: {e}");
+                log::error!("Error on close: {e}");
             }
             Ok(())
         })
@@ -493,6 +488,23 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .subscribe_user_events(&user)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "subscribe_user_fills")]
+    fn py_subscribe_user_fills<'py>(
+        &self,
+        py: Python<'py>,
+        user: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_user_fills(&user)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

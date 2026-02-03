@@ -5,7 +5,7 @@
 # Dependency Graph Configuration
 # =============================================================================
 [graph]
-all-features = false
+all-features = true
 no-default-features = false
 
 [output]
@@ -21,12 +21,11 @@ ignore = [
   # TODO: Monitor https://github.com/alloy-rs/alloy for migration to pastey or alternative
   { id = "RUSTSEC-2024-0436", reason = "paste crate is unmaintained but a transitive dependency via alloy" },
 
-  # fast-float has soundness issues and is unmaintained, pulled in via hypersync-client
-  # hypersync-client is optional (feature flag), so advisory only applies when feature is enabled
-  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for polars upgrade
-  # Consider migrating to fast-float2 fork once hypersync-client updates
-  { id = "RUSTSEC-2024-0379", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
-  { id = "RUSTSEC-2025-0003", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
+  # rustls-pemfile is unmaintained, pulled in via nautilus-network and various TLS dependencies
+  # Users are encouraged to migrate to rustls-pki-types directly but dependencies haven't updated yet
+  # This is not a security vulnerability, just a maintenance status advisory
+  # TODO: Monitor upstream TLS dependencies for migration
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained, transitive via nautilus-network (not a security vulnerability)" },
 
   # unic-* crates are unmaintained, pulled in via pyo3-stub-gen→rustpython-parser
   # This is dev-time only for generating .pyi stub files, not a runtime security risk
@@ -37,6 +36,18 @@ ignore = [
   { id = "RUSTSEC-2025-0090", reason = "unic-emoji-char unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
+
+  # bincode is unmaintained, pulled in via hypersync-client (blockchain adapter)
+  # The team considers 1.3.3 a complete version, not a security vulnerability
+  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for migration to alternative serialization
+  { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained, transitive via hypersync-client (not a security vulnerability)" },
+
+  # capnp unsound APIs in constant::Reader and StructSchema
+  # Transitive via hypersync-client, fix requires upstream update to capnp >= 0.24.0
+  # Low risk: only affects internal schema handling, not directly exposed
+  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for capnp update
+  { id = "RUSTSEC-2025-0143", reason = "capnp unsound APIs, transitive via hypersync-client, awaiting upstream fix" },
+
 ]
 
 # =============================================================================
@@ -137,11 +148,9 @@ skip = [
   { crate = "darling_macro" },
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
-  { crate = "syn" },
 
-  # Compression crates - version fragmentation between polars and parquet
-  { crate = "brotli" },
-  { crate = "brotli-decompressor" },
+  # Case conversion - version fragmentation via derive_more
+  { crate = "convert_case" },
 
   # Common utility crates with version fragmentation across ecosystem
   { crate = "base64" },
@@ -160,6 +169,12 @@ skip = [
   # Error handling - thiserror 1.x vs 2.x transition in progress
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
+
+  # HTTP client - reqwest 0.12 vs 0.13 transition (databento, hypersync, object_store on 0.12)
+  { crate = "reqwest" },
+
+  # Cap'n Proto - hypersync-client uses 0.23.x, nautilus-serialization uses 0.24.x
+  { crate = "capnp" },
 
   # TLS roots - version fragmentation in TLS ecosystem
   { crate = "webpki-roots" },

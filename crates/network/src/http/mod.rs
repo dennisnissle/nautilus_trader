@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,6 +19,8 @@ pub mod client;
 pub mod error;
 pub mod types;
 
+// Re-exports
 pub use client::{HttpClient, InnerHttpClient};
 pub use error::HttpClientError;
+pub use reqwest::{Error as ReqwestError, Method, Response, StatusCode, Url, header::USER_AGENT};
 pub use types::{HttpMethod, HttpResponse, HttpStatus};

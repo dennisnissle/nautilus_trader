@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -168,22 +168,38 @@ cdef class Quantity:
     def __ge__(self, other) -> bool:
         return Quantity._compare(self, other, Py_GE)
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            return (<Quantity>a).add(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Quantity._extract_decimal(a) + Quantity._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            return (<Quantity>a).add(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Quantity._extract_decimal(a) + Quantity._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            if (<Quantity>b)._mem.raw > (<Quantity>a)._mem.raw:
+                raise ValueError(
+                    f"Quantity subtraction would result in negative value: {a} - {b}"
+                )
+            return (<Quantity>a).sub(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Quantity._extract_decimal(a) - Quantity._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Quantity | decimal.Decimal | float:
+        if isinstance(a, Quantity) and isinstance(b, Quantity):
+            if (<Quantity>b)._mem.raw > (<Quantity>a)._mem.raw:
+                raise ValueError(
+                    f"Quantity subtraction would result in negative value: {a} - {b}"
+                )
+            return (<Quantity>a).sub(<Quantity>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Quantity._extract_decimal(a) - Quantity._extract_decimal(b)
@@ -313,23 +329,15 @@ cdef class Quantity:
         return self._mem.raw > 0
 
     cdef Quantity add(self, Quantity other):
-        return Quantity.from_raw_c(self._mem.raw + other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Quantity.from_raw_c(self._mem.raw + other._mem.raw, precision)
 
     cdef Quantity sub(self, Quantity other):
-        return Quantity.from_raw_c(self._mem.raw - other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Quantity.from_raw_c(self._mem.raw - other._mem.raw, precision)
 
-    cdef Quantity saturating_sub(self, Quantity other):
+    cpdef Quantity saturating_sub(self, Quantity other):
         return Quantity.from_mem_c(quantity_saturating_sub(self._mem, other._mem))
-
-    cdef void add_assign(self, Quantity other):
-        self._mem.raw += other._mem.raw
-        if self._mem.precision == 0:
-            self._mem.precision = other.precision
-
-    cdef void sub_assign(self, Quantity other):
-        self._mem.raw -= other._mem.raw
-        if self._mem.precision == 0:
-            self._mem.precision = other.precision
 
     cdef QuantityRaw raw_uint_c(self):
         return self._mem.raw
@@ -449,10 +457,22 @@ cdef class Quantity:
 
         Handles up to 16 decimals of precision (in high-precision mode).
 
+        .. warning::
+
+            This method is primarily for **internal use** and advanced scenarios.
+            Most users should use the standard constructor, ``from_str()``, or
+            ``from_int()`` instead.
+
+            The raw value **must** be a valid multiple of the scale factor for
+            the given precision (divisible by 10^(FIXED_PRECISION - precision)).
+            See the documentation for details:
+            https://nautilustrader.io/docs/nightly/concepts/data#fixed-point-precision-and-raw-values
+
         Parameters
         ----------
         raw : int
-            The raw fixed-point quantity value.
+            The raw fixed-point quantity value. Must be a valid multiple of the
+            scale factor for the given precision.
         precision : uint8_t
             The precision for the quantity. Use a precision of 0 for whole numbers
             (no fractional units).
@@ -686,22 +706,30 @@ cdef class Price:
     def __ge__(self, other) -> bool:
         return Price._compare(self, other, Py_GE)
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).add(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Price._extract_decimal(a) + Price._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).add(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Price._extract_decimal(a) + Price._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).sub(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Price._extract_decimal(a) - Price._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Price | decimal.Decimal | float:
+        if isinstance(a, Price) and isinstance(b, Price):
+            return (<Price>a).sub(<Price>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Price._extract_decimal(a) - Price._extract_decimal(b)
@@ -896,16 +924,12 @@ cdef class Price:
         return self._mem.raw > 0
 
     cdef Price add(self, Price other):
-        return Price.from_raw_c(self._mem.raw + other._mem.raw, self._mem.precision)
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Price.from_raw_c(self._mem.raw + other._mem.raw, precision)
 
     cdef Price sub(self, Price other):
-        return Price.from_raw_c(self._mem.raw - other._mem.raw, self._mem.precision)
-
-    cdef void add_assign(self, Price other):
-        self._mem.raw += other._mem.raw
-
-    cdef void sub_assign(self, Price other):
-        self._mem.raw -= other._mem.raw
+        cdef uint8_t precision = max(self._mem.precision, other._mem.precision)
+        return Price.from_raw_c(self._mem.raw - other._mem.raw, precision)
 
     cdef PriceRaw raw_int_c(self):
         return self._mem.raw
@@ -920,10 +944,21 @@ cdef class Price:
 
         Handles up to 16 decimals of precision (in high-precision mode).
 
+        .. warning::
+
+            This method is primarily for **internal use** and advanced scenarios.
+            Most users should use the standard constructor or ``from_str()`` instead.
+
+            The raw value **must** be a valid multiple of the scale factor for
+            the given precision (divisible by 10^(FIXED_PRECISION - precision)).
+            See the documentation for details:
+            https://nautilustrader.io/docs/nightly/concepts/data#fixed-point-precision-and-raw-values
+
         Parameters
         ----------
         raw : int
-            The raw fixed-point price value.
+            The raw fixed-point price value. Must be a valid multiple of the
+            scale factor for the given precision.
         precision : uint8_t
             The precision for the price. Use a precision of 0 for whole numbers
             (no fractional units).
@@ -1154,22 +1189,30 @@ cdef class Money:
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return self._mem.raw >= other._mem.raw
 
-    def __add__(a, b) -> decimal.Decimal | float:
+    def __add__(a, b) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).add(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Money._extract_decimal(a) + Money._extract_decimal(b)
 
-    def __radd__(b, a) -> decimal.Decimal | float:
+    def __radd__(b, a) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).add(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) + float(b)
         return Money._extract_decimal(a) + Money._extract_decimal(b)
 
-    def __sub__(a, b) -> decimal.Decimal | float:
+    def __sub__(a, b) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).sub(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Money._extract_decimal(a) - Money._extract_decimal(b)
 
-    def __rsub__(b, a) -> decimal.Decimal | float:
+    def __rsub__(b, a) -> Money | decimal.Decimal | float:
+        if isinstance(a, Money) and isinstance(b, Money):
+            return (<Money>a).sub(<Money>b)
         if isinstance(a, float) or isinstance(b, float):
             return float(a) - float(b)
         return Money._extract_decimal(a) - Money._extract_decimal(b)
@@ -1328,16 +1371,6 @@ cdef class Money:
         Condition.not_none(other, "other")
         Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
         return Money.from_raw_c(self._mem.raw - other._mem.raw, self.currency)
-
-    cdef void add_assign(self, Money other):
-        Condition.not_none(other, "other")
-        Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
-        self._mem.raw += other._mem.raw
-
-    cdef void sub_assign(self, Money other):
-        Condition.not_none(other, "other")
-        Condition.is_true(self._mem.currency.code == other._mem.currency.code, "currency != other.currency")
-        self._mem.raw -= other._mem.raw
 
     cdef MoneyRaw raw_int_c(self):
         return self._mem.raw

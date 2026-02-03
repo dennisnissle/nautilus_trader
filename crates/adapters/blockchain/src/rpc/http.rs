@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,8 +18,10 @@ use std::{collections::HashMap, num::NonZeroU32, str::FromStr};
 use alloy::primitives::{Address, U256};
 use bytes::Bytes;
 use nautilus_model::defi::rpc::{RpcLog, RpcNodeHttpResponse};
-use nautilus_network::{http::HttpClient, ratelimiter::quota::Quota};
-use reqwest::Method;
+use nautilus_network::{
+    http::{HttpClient, Method},
+    ratelimiter::quota::Quota,
+};
 use serde::de::DeserializeOwned;
 
 use crate::rpc::error::BlockchainRpcClientError;

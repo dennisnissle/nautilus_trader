@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,7 +16,6 @@
 use std::{sync::Arc, vec::IntoIter};
 
 use ahash::{AHashMap, AHashSet};
-use compare::Compare;
 use datafusion::{
     error::Result, logical_expr::expr::Sort, physical_plan::SendableRecordBatchStream, prelude::*,
 };
@@ -29,7 +28,10 @@ use nautilus_serialization::arrow::{
 use object_store::ObjectStore;
 use url::Url;
 
-use super::kmerge_batch::{EagerStream, ElementBatchIter, KMerge};
+use super::{
+    compare::Compare,
+    kmerge_batch::{EagerStream, ElementBatchIter, KMerge},
+};
 
 #[derive(Debug, Default)]
 pub struct TsInitComparator;
@@ -57,7 +59,7 @@ pub type QueryResult = KMerge<EagerStream<std::vec::IntoIter<Data>>, Data, TsIni
 /// a Vec of data by types that implement [`DecodeDataFromRecordBatch`].
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.persistence")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.persistence", unsendable)
 )]
 pub struct DataBackendSession {
     pub chunk_size: usize,
@@ -242,9 +244,6 @@ impl DataBackendSession {
     }
 }
 
-// Note: Intended to be used on a single Python thread
-unsafe impl Send for DataBackendSession {}
-
 #[must_use]
 pub fn build_query(
     table: &str,
@@ -323,6 +322,15 @@ impl DataQueryResult {
     /// drop if exists and reset the field.
     pub fn drop_chunk(&mut self) {
         if let Some(CVec { ptr, len, cap }) = self.chunk.take() {
+            assert!(
+                len <= cap,
+                "drop_chunk: len ({len}) > cap ({cap}) - memory corruption or wrong chunk type"
+            );
+            assert!(
+                len == 0 || !ptr.is_null(),
+                "drop_chunk: null ptr with non-zero len ({len}) - memory corruption"
+            );
+
             let data: Vec<Data> = unsafe { Vec::from_raw_parts(ptr.cast::<Data>(), len, cap) };
             drop(data);
         }
@@ -354,6 +362,3 @@ impl Drop for DataQueryResult {
         self.result.clear();
     }
 }
-
-// Note: Intended to be used on a single Python thread
-unsafe impl Send for DataQueryResult {}

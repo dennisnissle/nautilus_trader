@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,9 +17,13 @@
 
 use std::str::FromStr;
 
+pub use nautilus_core::serialization::{
+    deserialize_empty_string_as_none, deserialize_empty_ustr_as_none,
+    deserialize_optional_string_to_u64, deserialize_string_to_u64,
+};
 use nautilus_core::{
     UUID4,
-    datetime::{NANOSECONDS_IN_MILLISECOND, millis_to_nanos},
+    datetime::{NANOSECONDS_IN_MILLISECOND, millis_to_nanos_unchecked},
     nanos::UnixNanos,
 };
 use nautilus_model::{
@@ -97,38 +101,6 @@ pub fn determine_order_type(okx_ord_type: OKXOrderType, px: &str) -> OrderType {
     }
 }
 
-/// Deserializes an empty string into [`None`].
-///
-/// OKX frequently represents *null* string fields as an empty string (`""`).
-/// When such a payload is mapped onto `Option<String>` the default behaviour
-/// would yield `Some("")`, which is semantically different from the intended
-/// absence of a value. This helper ensures that empty strings are normalised
-/// to `None` during deserialization.
-///
-/// # Errors
-///
-/// Returns an error if the JSON value cannot be deserialised into a string.
-pub fn deserialize_empty_string_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    Ok(opt.filter(|s| !s.is_empty()))
-}
-
-/// Deserializes an empty [`Ustr`] into [`None`].
-///
-/// # Errors
-///
-/// Returns an error if the JSON value cannot be deserialised into a string.
-pub fn deserialize_empty_ustr_as_none<'de, D>(deserializer: D) -> Result<Option<Ustr>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<Ustr>::deserialize(deserializer)?;
-    Ok(opt.filter(|s| !s.is_empty()))
-}
-
 /// Deserializes a string into `Option<OKXTargetCurrency>`, treating empty strings as `None`.
 ///
 /// # Errors
@@ -145,40 +117,6 @@ where
         Ok(None)
     } else {
         s.parse().map(Some).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Deserializes a numeric string into a `u64`.
-///
-/// # Errors
-///
-/// Returns an error if the string cannot be parsed into a `u64`.
-pub fn deserialize_string_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    if s.is_empty() {
-        Ok(0)
-    } else {
-        s.parse::<u64>().map_err(serde::de::Error::custom)
-    }
-}
-
-/// Deserializes an optional numeric string into `Option<u64>`.
-///
-/// # Errors
-///
-/// Returns an error under the same cases as [`deserialize_string_to_u64`].
-pub fn deserialize_optional_string_to_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    match s {
-        Some(s) if s.is_empty() => Ok(None),
-        Some(s) => s.parse().map(Some).map_err(serde::de::Error::custom),
-        None => Ok(None),
     }
 }
 
@@ -205,36 +143,19 @@ where
         return Ok(OKXVipLevel::Vip0);
     }
 
-    let s_lower = s.to_lowercase();
-    let level_str = s_lower
-        .strip_prefix("vip")
-        .or_else(|| s_lower.strip_prefix("lv"))
-        .unwrap_or(&s_lower);
+    let level_str = if s.len() >= 3 && s[..3].eq_ignore_ascii_case("vip") {
+        &s[3..]
+    } else if s.len() >= 2 && s[..2].eq_ignore_ascii_case("lv") {
+        &s[2..]
+    } else {
+        &s
+    };
 
     let level_num = level_str
         .parse::<u8>()
         .map_err(|e| serde::de::Error::custom(format!("Invalid VIP level '{s}': {e}")))?;
 
     Ok(OKXVipLevel::from(level_num))
-}
-
-/// Returns a currency from the internal map or creates a new crypto currency.
-///
-/// If the code is empty, logs a warning with context and returns USDT as fallback.
-/// Uses [`Currency::get_or_create_crypto`] to handle unknown currency codes,
-/// which automatically registers newly listed OKX assets.
-fn get_currency_with_context(code: &str, context: Option<&str>) -> Currency {
-    let trimmed = code.trim();
-    let ctx = context.unwrap_or("unknown");
-
-    if trimmed.is_empty() {
-        tracing::warn!(
-            "get_currency called with empty code (context: {ctx}), using USDT as fallback"
-        );
-        return Currency::USDT();
-    }
-
-    Currency::get_or_create_crypto(trimmed)
 }
 
 /// Returns the [`OKXInstrumentType`] that corresponds to the supplied
@@ -262,24 +183,25 @@ pub fn okx_instrument_type(instrument: &InstrumentAny) -> anyhow::Result<OKXInst
 /// - FUTURES: {BASE}-{QUOTE}-{YYMMDD} (e.g., BTC-USDT-250328)
 /// - OPTION: {BASE}-{QUOTE}-{YYMMDD}-{STRIKE}-{C/P} (e.g., BTC-USD-250328-50000-C)
 pub fn okx_instrument_type_from_symbol(symbol: &str) -> OKXInstrumentType {
-    // TODO: Improve efficiency of this
-    let parts: Vec<&str> = symbol.split('-').collect();
+    // Count dashes to determine part count
+    let dash_count = symbol.bytes().filter(|&b| b == b'-').count();
 
-    match parts.len() {
-        2 => OKXInstrumentType::Spot,
-        3 => {
-            let suffix = parts[2];
+    match dash_count {
+        1 => OKXInstrumentType::Spot, // 2 parts: BASE-QUOTE
+        2 => {
+            // 3 parts: Check suffix after last dash
+            let suffix = symbol.rsplit('-').next().unwrap_or("");
             if suffix == "SWAP" {
                 OKXInstrumentType::Swap
-            } else if suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_digit()) {
+            } else if suffix.len() == 6 && suffix.bytes().all(|b| b.is_ascii_digit()) {
                 // Date format YYMMDD
                 OKXInstrumentType::Futures
             } else {
                 OKXInstrumentType::Spot
             }
         }
-        5 => OKXInstrumentType::Option,
-        _ => OKXInstrumentType::Spot, // Default fallback
+        4 => OKXInstrumentType::Option, // 5 parts: BASE-QUOTE-DATE-STRIKE-C/P
+        _ => OKXInstrumentType::Spot,   // Default fallback
     }
 }
 
@@ -388,14 +310,14 @@ pub fn parse_fee_currency(
     if trimmed.is_empty() {
         if !fee_amount.is_zero() {
             let ctx = context();
-            tracing::warn!(
+            log::warn!(
                 "Empty fee_ccy in {ctx} with non-zero fee={fee_amount}, using USDT as fallback"
             );
         }
         return Currency::USDT();
     }
 
-    get_currency_with_context(trimmed, Some(&context()))
+    Currency::get_or_create_crypto_with_context(trimmed, Some(&context()))
 }
 
 /// Parses OKX side to Nautilus aggressor side.
@@ -484,8 +406,7 @@ pub fn parse_funding_rate_msg(
         .funding_rate
         .as_str()
         .parse::<Decimal>()
-        .map_err(|e| anyhow::anyhow!("Invalid funding_rate value: {e}"))?
-        .normalize();
+        .map_err(|e| anyhow::anyhow!("Invalid funding_rate value: {e}"))?;
 
     let funding_time = Some(parse_millisecond_timestamp(msg.funding_time));
     let ts_event = parse_millisecond_timestamp(msg.ts);
@@ -612,15 +533,7 @@ pub fn parse_order_status_report(
 
         // Convert quote quantity to base: quantity_base = sz_quote / price
         let quantity_base = if let (Some(sz), Some(price)) = (sz_quote_dec, conversion_price_dec) {
-            if !price.is_zero() {
-                let quantity_dec = sz / price;
-                Quantity::from_decimal_dp(quantity_dec, size_precision).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to convert quote-to-base quantity for ord_id={}, sz={sz}, price={price}, quantity_dec={quantity_dec}: {e}",
-                        order.ord_id.as_str()
-                    )
-                })?
-            } else {
+            if price.is_zero() {
                 log::warn!(
                     "Cannot convert quote quantity with zero price: ord_id={}, sz={}, using sz as-is",
                     order.ord_id.as_str(),
@@ -631,6 +544,14 @@ pub fn parse_order_status_report(
                         "Failed to parse fallback quantity for ord_id={}, sz='{}': {e}",
                         order.ord_id.as_str(),
                         order.sz
+                    )
+                })?
+            } else {
+                let quantity_dec = sz / price;
+                Quantity::from_decimal_dp(quantity_dec, size_precision).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to convert quote-to-base quantity for ord_id={}, sz={sz}, price={price}, quantity_dec={quantity_dec}: {e}",
+                        order.ord_id.as_str()
                     )
                 })?
             }
@@ -919,11 +840,11 @@ pub fn parse_position_status_report(
         } else if pos_ccy == quote_ccy {
             // Short position: pos_ccy is quote currency, need to convert to base
             // Use Decimal arithmetic to avoid floating-point precision errors
-            let avg_px_str = if !position.avg_px.is_empty() {
-                &position.avg_px
-            } else {
+            let avg_px_str = if position.avg_px.is_empty() {
                 // If no avg_px, use mark_px as fallback
                 &position.mark_px
+            } else {
+                &position.avg_px
             };
             let avg_px_dec = Decimal::from_str(avg_px_str)?;
 
@@ -1082,23 +1003,13 @@ where
     F: Fn(&T) -> anyhow::Result<R>,
     W: Fn(R) -> Data,
 {
-    let items = match data {
-        serde_json::Value::Array(items) => items,
-        other => {
-            let raw = serde_json::to_string(&other).unwrap_or_else(|_| other.to_string());
-            let mut snippet: String = raw.chars().take(512).collect();
-            if raw.len() > snippet.len() {
-                snippet.push_str("...");
-            }
-            anyhow::bail!("Expected array payload, received {snippet}");
-        }
-    };
+    let messages: Vec<T> =
+        serde_json::from_value(data).map_err(|e| anyhow::anyhow!("Expected array payload: {e}"))?;
 
-    let mut results = Vec::with_capacity(items.len());
+    let mut results = Vec::with_capacity(messages.len());
 
-    for item in items {
-        let message: T = serde_json::from_value(item)?;
-        let parsed = parser(&message)?;
+    for message in &messages {
+        let parsed = parser(message)?;
         results.push(wrapper(parsed));
     }
 
@@ -1438,10 +1349,22 @@ fn parse_common_instrument_data(
         )
     })?;
 
+    if definition.lot_sz.is_empty() {
+        anyhow::bail!("`lot_sz` is empty for {}", definition.inst_id);
+    }
+
     let size_increment = Quantity::from(&definition.lot_sz);
     let lot_size = Some(Quantity::from(&definition.lot_sz));
-    let max_quantity = Some(Quantity::from(&definition.max_mkt_sz));
-    let min_quantity = Some(Quantity::from(&definition.min_sz));
+    let max_quantity = if definition.max_mkt_sz.is_empty() {
+        None
+    } else {
+        Some(Quantity::from(&definition.max_mkt_sz))
+    };
+    let min_quantity = if definition.min_sz.is_empty() {
+        None
+    } else {
+        Some(Quantity::from(&definition.min_sz))
+    };
     let max_notional: Option<Money> = None;
     let min_notional: Option<Money> = None;
     let max_price = None; // TBD
@@ -1498,8 +1421,10 @@ impl InstrumentParser for SpotInstrumentParser {
         ts_init: UnixNanos,
     ) -> anyhow::Result<InstrumentAny> {
         let context = format!("{} instrument {}", definition.inst_type, definition.inst_id);
-        let base_currency = get_currency_with_context(&definition.base_ccy, Some(&context));
-        let quote_currency = get_currency_with_context(&definition.quote_ccy, Some(&context));
+        let base_currency =
+            Currency::get_or_create_crypto_with_context(definition.base_ccy, Some(&context));
+        let quote_currency =
+            Currency::get_or_create_crypto_with_context(definition.quote_ccy, Some(&context));
 
         // Parse multiplier as product of ct_mult and ct_val
         let multiplier = parse_multiplier_product(definition)?;
@@ -1598,9 +1523,11 @@ pub fn parse_swap_instrument(
 
     let instrument_id = parse_instrument_id(definition.inst_id);
     let raw_symbol = Symbol::from_ustr_unchecked(definition.inst_id);
-    let base_currency = get_currency_with_context(base_currency, Some(&context));
-    let quote_currency = get_currency_with_context(quote_currency, Some(&context));
-    let settlement_currency = get_currency_with_context(&definition.settle_ccy, Some(&context));
+    let base_currency = Currency::get_or_create_crypto_with_context(base_currency, Some(&context));
+    let quote_currency =
+        Currency::get_or_create_crypto_with_context(quote_currency, Some(&context));
+    let settlement_currency =
+        Currency::get_or_create_crypto_with_context(definition.settle_ccy, Some(&context));
     let is_inverse = match definition.ct_type {
         OKXContractType::Linear => false,
         OKXContractType::Inverse => true,
@@ -1690,9 +1617,11 @@ pub fn parse_futures_instrument(
 
     let instrument_id = parse_instrument_id(definition.inst_id);
     let raw_symbol = Symbol::from_ustr_unchecked(definition.inst_id);
-    let underlying = get_currency_with_context(&definition.uly, Some(&context));
-    let quote_currency = get_currency_with_context(quote_currency, Some(&context));
-    let settlement_currency = get_currency_with_context(&definition.settle_ccy, Some(&context));
+    let underlying = Currency::get_or_create_crypto_with_context(definition.uly, Some(&context));
+    let quote_currency =
+        Currency::get_or_create_crypto_with_context(quote_currency, Some(&context));
+    let settlement_currency =
+        Currency::get_or_create_crypto_with_context(definition.settle_ccy, Some(&context));
     let is_inverse = match definition.ct_type {
         OKXContractType::Linear => false,
         OKXContractType::Inverse => true,
@@ -1710,8 +1639,8 @@ pub fn parse_futures_instrument(
     let expiry_time = definition
         .exp_time
         .ok_or_else(|| anyhow::anyhow!("`exp_time` is required for {}", definition.inst_id))?;
-    let activation_ns = UnixNanos::from(millis_to_nanos(listing_time as f64));
-    let expiration_ns = UnixNanos::from(millis_to_nanos(expiry_time as f64));
+    let activation_ns = UnixNanos::from(millis_to_nanos_unchecked(listing_time as f64));
+    let expiration_ns = UnixNanos::from(millis_to_nanos_unchecked(expiry_time as f64));
 
     if definition.tick_sz.is_empty() {
         anyhow::bail!("`tick_sz` is empty for {}", definition.inst_id);
@@ -1786,11 +1715,12 @@ pub fn parse_option_instrument(
 
     let instrument_id = parse_instrument_id(definition.inst_id);
     let raw_symbol = Symbol::from_ustr_unchecked(definition.inst_id);
-    let underlying = get_currency_with_context(underlying_str, Some(&context));
+    let underlying = Currency::get_or_create_crypto_with_context(underlying_str, Some(&context));
     let option_kind: OptionKind = definition.opt_type.into();
     let strike_price = Price::from(&definition.stk);
-    let quote_currency = get_currency_with_context(quote_ccy_str, Some(&context));
-    let settlement_currency = get_currency_with_context(&definition.settle_ccy, Some(&context));
+    let quote_currency = Currency::get_or_create_crypto_with_context(quote_ccy_str, Some(&context));
+    let settlement_currency =
+        Currency::get_or_create_crypto_with_context(definition.settle_ccy, Some(&context));
 
     let is_inverse = if definition.ct_type == OKXContractType::None {
         settlement_currency == underlying
@@ -1804,8 +1734,8 @@ pub fn parse_option_instrument(
     let expiry_time = definition
         .exp_time
         .ok_or_else(|| anyhow::anyhow!("`exp_time` is required for {}", definition.inst_id))?;
-    let activation_ns = UnixNanos::from(millis_to_nanos(listing_time as f64));
-    let expiration_ns = UnixNanos::from(millis_to_nanos(expiry_time as f64));
+    let activation_ns = UnixNanos::from(millis_to_nanos_unchecked(listing_time as f64));
+    let expiration_ns = UnixNanos::from(millis_to_nanos_unchecked(expiry_time as f64));
 
     if definition.tick_sz.is_empty() {
         anyhow::bail!("`tick_sz` is empty for {}", definition.inst_id);
@@ -1867,7 +1797,7 @@ fn parse_balance_field(
     match Decimal::from_str(value_str) {
         Ok(decimal) => Money::from_decimal(decimal, currency).ok(),
         Err(e) => {
-            tracing::warn!(
+            log::warn!(
                 "Skipping balance detail for {ccy_str} with invalid {field_name} '{value_str}': {e}"
             );
             None
@@ -1888,15 +1818,12 @@ pub fn parse_account_state(
         // Skip balances with empty or whitespace-only currency codes
         let ccy_str = b.ccy.as_str().trim();
         if ccy_str.is_empty() {
-            tracing::debug!(
-                "Skipping balance detail with empty currency code | raw_data={:?}",
-                b
-            );
+            log::debug!("Skipping balance detail with empty currency code | raw_data={b:?}");
             continue;
         }
 
         // Get or create currency (consistent with instrument parsing)
-        let currency = get_currency_with_context(ccy_str, Some("balance detail"));
+        let currency = Currency::get_or_create_crypto_with_context(ccy_str, Some("balance detail"));
 
         // Parse balance values, skip if invalid
         let Some(total) = parse_balance_field(&b.cash_bal, "cash_bal", currency, ccy_str) else {
@@ -1937,12 +1864,12 @@ pub fn parse_account_state(
 
                     let initial_margin = Money::from_decimal(imr_dec, margin_currency)
                         .unwrap_or_else(|e| {
-                            tracing::error!("Failed to create initial margin: {e}");
+                            log::error!("Failed to create initial margin: {e}");
                             Money::zero(margin_currency)
                         });
                     let maintenance_margin = Money::from_decimal(mmr_dec, margin_currency)
                         .unwrap_or_else(|e| {
-                            tracing::error!("Failed to create maintenance margin: {e}");
+                            log::error!("Failed to create maintenance margin: {e}");
                             Money::zero(margin_currency)
                         });
 
@@ -1956,14 +1883,14 @@ pub fn parse_account_state(
                 }
             }
             (Err(e1), _) => {
-                tracing::warn!(
+                log::warn!(
                     "Failed to parse initial margin requirement '{}': {}",
                     okx_account.imr,
                     e1
                 );
             }
             (_, Err(e2)) => {
-                tracing::warn!(
+                log::warn!(
                     "Failed to parse maintenance margin requirement '{}': {}",
                     okx_account.mmr,
                     e2
@@ -1975,7 +1902,7 @@ pub fn parse_account_state(
     let account_type = AccountType::Margin;
     let is_reported = true;
     let event_id = UUID4::new();
-    let ts_event = UnixNanos::from(millis_to_nanos(okx_account.u_time as f64));
+    let ts_event = UnixNanos::from(millis_to_nanos_unchecked(okx_account.u_time as f64));
 
     Ok(AccountState::new(
         account_id,
@@ -1989,10 +1916,6 @@ pub fn parse_account_state(
         None,
     ))
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -2049,32 +1972,6 @@ mod tests {
         // Unknown currency code should create a new Currency (8 decimals, crypto)
         let result = parse_fee_currency("NEWTOKEN", dec!(0.5), || "test context".to_string());
         assert_eq!(result.code.as_str(), "NEWTOKEN");
-        assert_eq!(result.precision, 8);
-    }
-
-    #[rstest]
-    fn test_get_currency_with_context_valid() {
-        let result = get_currency_with_context("BTC", Some("test context"));
-        assert_eq!(result, Currency::BTC());
-    }
-
-    #[rstest]
-    fn test_get_currency_with_context_empty() {
-        let result = get_currency_with_context("", Some("test context"));
-        assert_eq!(result, Currency::USDT());
-    }
-
-    #[rstest]
-    fn test_get_currency_with_context_whitespace() {
-        let result = get_currency_with_context("  ", Some("test context"));
-        assert_eq!(result, Currency::USDT());
-    }
-
-    #[rstest]
-    fn test_get_currency_with_context_unknown() {
-        // Unknown codes should create a new Currency, preserving newly listed assets
-        let result = get_currency_with_context("NEWCOIN", Some("test context"));
-        assert_eq!(result.code.as_str(), "NEWCOIN");
         assert_eq!(result.precision, 8);
     }
 
@@ -2382,11 +2279,8 @@ mod tests {
     fn test_parse_place_order_response() {
         let json_data = load_test_json("http_place_order_response.json");
         let parsed: OKXPlaceOrderResponse = serde_json::from_str(&json_data).unwrap();
-        assert_eq!(
-            parsed.ord_id,
-            Some(ustr::Ustr::from("12345678901234567890"))
-        );
-        assert_eq!(parsed.cl_ord_id, Some(ustr::Ustr::from("client_order_123")));
+        assert_eq!(parsed.ord_id, Some(Ustr::from("12345678901234567890")));
+        assert_eq!(parsed.cl_ord_id, Some(Ustr::from("client_order_123")));
         assert_eq!(parsed.tag, Some(String::new()));
     }
 
@@ -2579,6 +2473,38 @@ mod tests {
         if let InstrumentAny::CurrencyPair(pair) = instrument {
             assert_eq!(pair.maker_fee, dec!(0.0008));
             assert_eq!(pair.taker_fee, dec!(0.0010));
+        } else {
+            panic!("Expected CurrencyPair instrument");
+        }
+    }
+
+    #[rstest]
+    fn test_parse_instrument_any_passes_through_fees() {
+        // parse_instrument_any receives fees already converted to Nautilus format
+        // (negation happens in HTTP client when parsing OKX API values)
+        let json_data = load_test_json("http_get_instruments_spot.json");
+        let response: OKXResponse<OKXInstrument> = serde_json::from_str(&json_data).unwrap();
+        let okx_inst = response.data.first().unwrap();
+
+        // Fees are already in Nautilus convention (negated by HTTP client)
+        let maker_fee = Some(dec!(-0.00025)); // Nautilus: rebate (negative)
+        let taker_fee = Some(dec!(0.00050)); // Nautilus: commission (positive)
+
+        let instrument = parse_instrument_any(
+            okx_inst,
+            None,
+            None,
+            maker_fee,
+            taker_fee,
+            UnixNanos::default(),
+        )
+        .unwrap()
+        .expect("Should parse spot instrument");
+
+        // Fees should pass through unchanged
+        if let InstrumentAny::CurrencyPair(pair) = instrument {
+            assert_eq!(pair.maker_fee, dec!(-0.00025));
+            assert_eq!(pair.taker_fee, dec!(0.00050));
         } else {
             panic!("Expected CurrencyPair instrument");
         }

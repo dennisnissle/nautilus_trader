@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -506,6 +506,50 @@ impl From<messages::BybitWsCancelOrderParams> for BybitWsCancelOrderParams {
             symbol: params.symbol.to_string(),
             order_id: params.order_id,
             order_link_id: params.order_link_id,
+        }
+    }
+}
+
+/// Parameters for fetching tickers via HTTP API.
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct BybitTickersParams {
+    #[pyo3(get, set)]
+    pub category: BybitProductType,
+    #[pyo3(get, set)]
+    pub symbol: Option<String>,
+    #[pyo3(get, set)]
+    pub base_coin: Option<String>,
+    #[pyo3(get, set)]
+    pub exp_date: Option<String>,
+}
+
+#[pymethods]
+impl BybitTickersParams {
+    #[new]
+    #[pyo3(signature = (category, symbol=None, base_coin=None, exp_date=None))]
+    fn py_new(
+        category: BybitProductType,
+        symbol: Option<String>,
+        base_coin: Option<String>,
+        exp_date: Option<String>,
+    ) -> Self {
+        Self {
+            category,
+            symbol,
+            base_coin,
+            exp_date,
+        }
+    }
+}
+
+impl From<BybitTickersParams> for crate::http::query::BybitTickersParams {
+    fn from(params: BybitTickersParams) -> Self {
+        Self {
+            category: params.category,
+            symbol: params.symbol,
+            base_coin: params.base_coin,
+            exp_date: params.exp_date,
         }
     }
 }

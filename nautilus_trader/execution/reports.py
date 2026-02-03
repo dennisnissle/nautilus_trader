@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -69,6 +69,7 @@ from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import Order
 
 
 class ExecutionReport(Document):
@@ -253,8 +254,7 @@ class OrderStatusReport(ExecutionReport):
         self.filled_qty = filled_qty
 
         # Clamp to minimum zero for robustness
-        raw_leaves_qty = max(self.quantity.raw - self.filled_qty.raw, 0)
-        self.leaves_qty = Quantity.from_raw(raw_leaves_qty, self.quantity.precision)
+        self.leaves_qty = self.quantity.saturating_sub(self.filled_qty)
 
         self.display_qty = display_qty
         self.avg_px = avg_px
@@ -283,6 +283,32 @@ class OrderStatusReport(ExecutionReport):
             OrderStatus.PARTIALLY_FILLED,
         )
 
+    def is_order_updated(self, order: Order) -> bool:
+        """
+        Return whether the order has been updated based on this report.
+
+        Parameters
+        ----------
+        order : Order
+            The order to compare against.
+
+        Returns
+        -------
+        bool
+
+        """
+        if order.has_price and self.price and order.price != self.price:
+            return True
+
+        if (
+            order.has_trigger_price
+            and self.trigger_price
+            and order.trigger_price != self.trigger_price
+        ):
+            return True
+
+        return order.quantity != self.quantity
+
     def __eq__(self, other: object) -> bool:
         if other is None:
             return False
@@ -294,6 +320,8 @@ class OrderStatusReport(ExecutionReport):
             and self.venue_order_id == other.venue_order_id
             and self.ts_accepted == other.ts_accepted
         )
+
+    __hash__: None = None  # type: ignore[assignment]  # Explicitly unhashable
 
     def __repr__(self) -> str:
         linked_ids = [o.value for o in self.linked_order_ids] if self.linked_order_ids else None
@@ -682,6 +710,8 @@ class FillReport(ExecutionReport):
             and self.ts_event == other.ts_event
         )
 
+    __hash__: None = None  # type: ignore[assignment]  # Explicitly unhashable
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -1021,7 +1051,7 @@ class ExecutionMassStatus(Document):
         self,
         client_id: ClientId,
         account_id: AccountId,
-        venue: Venue,
+        venue: Venue | None,
         report_id: UUID4,
         ts_init: int,
     ) -> None:
@@ -1160,7 +1190,7 @@ class ExecutionMassStatus(Document):
             "type": type(self).__name__,
             "client_id": self.client_id.value,
             "account_id": self.account_id.value,
-            "venue": self.venue.value,
+            "venue": self._get_venue_value(),
             "report_id": self.id.value,
             "ts_init": self.ts_init,
             "order_reports": {
@@ -1181,7 +1211,7 @@ class ExecutionMassStatus(Document):
         pyo3_mass_status = nautilus_pyo3.ExecutionMassStatus(
             client_id=nautilus_pyo3.ClientId(self.client_id.value),
             account_id=nautilus_pyo3.AccountId(self.account_id.value),
-            venue=nautilus_pyo3.Venue(self.venue.value),
+            venue=nautilus_pyo3.Venue(self._get_venue_value()),
             ts_init=self.ts_init,
             report_id=nautilus_pyo3.UUID4.from_str(self.id.value),
         )
@@ -1206,6 +1236,13 @@ class ExecutionMassStatus(Document):
             pyo3_mass_status.add_position_reports(all_position_reports)
 
         return pyo3_mass_status
+
+    def _get_venue_value(self) -> str:
+        # Derive venue value from account_id if venue is None (for multi-venue brokers like IB).
+        if self.venue is None:
+            return self.account_id.get_issuer()
+
+        return self.venue.value
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ExecutionMassStatus:

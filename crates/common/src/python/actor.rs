@@ -1,11 +1,9 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
-//
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
 //  You may not use this file except in compliance with the License.
 //  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
-//
 //  Unless required by applicable law or agreed to in writing, software
 //  distributed under the License is distributed on an "AS IS" BASIS,
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -140,7 +138,7 @@ pub struct PyDataActorInner {
 
 impl Debug for PyDataActorInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PyDataActorInner")
+        f.debug_struct(stringify!(PyDataActorInner))
             .field("core", &self.core)
             .field("py_self", &self.py_self.as_ref().map(|_| "<Py<PyAny>>"))
             .field("clock", &self.clock)
@@ -495,7 +493,7 @@ pub struct PyDataActor {
 
 impl Debug for PyDataActor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PyDataActor")
+        f.debug_struct(stringify!(PyDataActor))
             .field("inner", &self.inner())
             .finish()
     }
@@ -624,7 +622,7 @@ impl PyDataActor {
         // Register default time event handler for this actor
         let actor_id = inner.actor_id().inner();
         let callback = TimeEventCallback::from(move |event: TimeEvent| {
-            if let Some(actor) = try_get_actor_unchecked::<PyDataActorInner>(&actor_id) {
+            if let Some(mut actor) = try_get_actor_unchecked::<PyDataActorInner>(&actor_id) {
                 if let Err(e) = actor.on_time_event(&event) {
                     log::error!("Python time event handler failed for actor {actor_id}: {e}");
                 }
@@ -859,12 +857,12 @@ impl PyDataActor {
     #[pyo3(name = "clock")]
     fn py_clock(&self) -> PyResult<PyClock> {
         let inner = self.inner();
-        if !inner.core.is_registered() {
+        if inner.core.is_registered() {
+            Ok(inner.clock.clone())
+        } else {
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Actor must be registered with a trader before accessing clock",
             ))
-        } else {
-            Ok(inner.clock.clone())
         }
     }
 
@@ -872,12 +870,12 @@ impl PyDataActor {
     #[pyo3(name = "cache")]
     fn py_cache(&self) -> PyResult<PyCache> {
         let inner = self.inner();
-        if !inner.core.is_registered() {
+        if inner.core.is_registered() {
+            Ok(PyCache::from_rc(inner.core.cache_rc()))
+        } else {
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Actor must be registered with a trader before accessing cache",
             ))
-        } else {
-            Ok(PyCache::from_rc(inner.core.cache_rc()))
         }
     }
 
@@ -1292,6 +1290,13 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id))]
     fn py_subscribe_order_fills(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
         DataActor::subscribe_order_fills(self.inner_mut(), instrument_id);
+        Ok(())
+    }
+
+    #[pyo3(name = "subscribe_order_cancels")]
+    #[pyo3(signature = (instrument_id))]
+    fn py_subscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+        DataActor::subscribe_order_cancels(self.inner_mut(), instrument_id);
         Ok(())
     }
 
@@ -1722,6 +1727,13 @@ impl PyDataActor {
         Ok(())
     }
 
+    #[pyo3(name = "unsubscribe_order_cancels")]
+    #[pyo3(signature = (instrument_id))]
+    fn py_unsubscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+        DataActor::unsubscribe_order_cancels(self.inner_mut(), instrument_id);
+        Ok(())
+    }
+
     #[cfg(feature = "defi")]
     #[pyo3(name = "unsubscribe_blocks")]
     #[pyo3(signature = (chain, client_id=None, params=None))]
@@ -1861,9 +1873,6 @@ impl PyDataActor {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1881,7 +1890,8 @@ mod tests {
     use nautilus_core::{MUTEX_POISONED, UUID4, UnixNanos};
     #[cfg(feature = "defi")]
     use nautilus_model::defi::{
-        AmmType, Block, Blockchain, Chain, Dex, DexType, Pool, PoolLiquidityUpdate, PoolSwap, Token,
+        AmmType, Block, Blockchain, Chain, Dex, DexType, Pool, PoolIdentifier, PoolLiquidityUpdate,
+        PoolSwap, Token,
     };
     use nautilus_model::{
         data::{
@@ -2609,12 +2619,17 @@ mod tests {
             "Wrapped Ether".into(),
             18,
         );
+        let pool_address = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+            .parse()
+            .unwrap();
+        let pool_identifier: PoolIdentifier = "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+            .parse()
+            .unwrap();
         let pool = Arc::new(Pool::new(
             chain.clone(),
             dex.clone(),
-            "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
-                .parse()
-                .unwrap(),
+            pool_address,
+            pool_identifier,
             12345,
             token0,
             token1,
@@ -2627,7 +2642,7 @@ mod tests {
             chain,
             dex,
             pool.instrument_id,
-            pool.address,
+            pool.pool_identifier,
             12345,
             "0xabc123".to_string(),
             0,
@@ -2674,13 +2689,6 @@ mod tests {
         // We test on_block since PoolLiquidityUpdate construction is complex
         assert!(rust_actor.inner_mut().on_block(&block).is_ok());
     }
-
-    // ========================================================================
-    // Python dispatch verification tests
-    //
-    // These tests verify that when py_self is set, the Rust trait methods
-    // correctly dispatch to the Python instance's overridden methods.
-    // ========================================================================
 
     const TRACKING_ACTOR_CODE: &std::ffi::CStr = c_str!(
         r#"

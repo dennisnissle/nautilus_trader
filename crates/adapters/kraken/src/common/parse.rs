@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,13 +18,15 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use chrono::DateTime;
-use nautilus_core::{datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos, uuid::UUID4};
+use nautilus_core::{
+    datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos, parsing::precision_from_str,
+    uuid::UUID4,
+};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{
-        AggressorSide, BarAggregation, ContingencyType, LiquiditySide, OrderStatus,
-        PositionSideSpecified, TimeInForce, TrailingOffsetType,
+        AggressorSide, BarAggregation, ContingencyType, LiquiditySide, OrderStatus, OrderType,
+        PositionSideSpecified, TimeInForce, TrailingOffsetType, TriggerType,
     },
     identifiers::{AccountId, InstrumentId, Symbol, TradeId, VenueOrderId},
     instruments::{
@@ -32,7 +34,7 @@ use nautilus_model::{
         currency_pair::CurrencyPair,
     },
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{Currency, Money, Price, Quantity},
+    types::{Currency, Money, Price, Quantity, fixed::FIXED_PRECISION},
 };
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -40,7 +42,10 @@ use rust_decimal_macros::dec;
 use crate::{
     common::{
         consts::KRAKEN_VENUE,
-        enums::{KrakenFillType, KrakenPositionSide},
+        enums::{
+            KrakenFillType, KrakenInstrumentType, KrakenPositionSide, KrakenSpotTrigger,
+            KrakenTriggerSignal,
+        },
     },
     http::models::{
         AssetPairInfo, FuturesFill, FuturesInstrument, FuturesOpenOrder, FuturesOrderEvent,
@@ -58,16 +63,42 @@ pub fn parse_decimal(value: &str) -> anyhow::Result<Decimal> {
         .map_err(|e| anyhow::anyhow!("Failed to parse decimal '{value}': {e}"))
 }
 
-/// Parse an RFC3339 timestamp string into UnixNanos.
 fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos> {
-    let dt = DateTime::parse_from_rfc3339(value)
-        .with_context(|| format!("Failed to parse {field}='{value}' as RFC3339 timestamp"))?;
+    value
+        .parse::<UnixNanos>()
+        .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
+}
 
-    let nanos = dt.timestamp_nanos_opt().ok_or_else(|| {
-        anyhow::anyhow!("{field} timestamp overflowed when converting to nanoseconds")
-    })?;
+/// Normalizes a Kraken currency code by stripping the legacy X/Z prefix.
+///
+/// Kraken uses legacy prefixes for some currencies (e.g., XXBT for Bitcoin, XETH for Ethereum,
+/// ZUSD for USD). This function strips those prefixes for consistent lookups.
+#[inline]
+pub fn normalize_currency_code(code: &str) -> &str {
+    code.strip_prefix("X")
+        .or_else(|| code.strip_prefix("Z"))
+        .unwrap_or(code)
+}
 
-    Ok(UnixNanos::from(nanos as u64))
+/// Normalizes a Kraken spot symbol to use BTC instead of XBT.
+///
+/// Kraken's REST API returns `XBT` for Bitcoin (following ISO 4217 conventions), but their
+/// WebSocket v2 API uses the more common `BTC` format. This function normalizes symbols
+/// so that instruments and subscriptions use consistent, industry-standard symbols.
+/// Handles XBT in both base position (XBT/USD -> BTC/USD) and quote position (ETH/XBT -> ETH/BTC).
+#[inline]
+pub fn normalize_spot_symbol(symbol: &str) -> String {
+    let normalized = if symbol.starts_with("XBT/") {
+        symbol.replacen("XBT/", "BTC/", 1)
+    } else {
+        symbol.to_string()
+    };
+
+    if normalized.ends_with("/XBT") {
+        normalized.replacen("/XBT", "/BTC", 1)
+    } else {
+        normalized
+    }
 }
 
 /// Parse an optional decimal string.
@@ -75,6 +106,55 @@ pub fn parse_decimal_opt(value: Option<&str>) -> anyhow::Result<Option<Decimal>>
     match value {
         Some(s) if !s.is_empty() && s != "0" => Ok(Some(parse_decimal(s)?)),
         _ => Ok(None),
+    }
+}
+
+/// Parse Kraken spot trigger to Nautilus TriggerType.
+fn parse_trigger_type(
+    order_type: OrderType,
+    trigger: Option<KrakenSpotTrigger>,
+) -> Option<TriggerType> {
+    let is_conditional = matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    );
+
+    if !is_conditional {
+        return None;
+    }
+
+    match trigger {
+        Some(KrakenSpotTrigger::Last) => Some(TriggerType::LastPrice),
+        Some(KrakenSpotTrigger::Index) => Some(TriggerType::IndexPrice),
+        None => Some(TriggerType::Default),
+    }
+}
+
+/// Parse Kraken futures trigger signal to Nautilus TriggerType.
+fn parse_futures_trigger_type(
+    order_type: OrderType,
+    trigger_signal: Option<KrakenTriggerSignal>,
+) -> Option<TriggerType> {
+    let is_conditional = matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    );
+
+    if !is_conditional {
+        return None;
+    }
+
+    match trigger_signal {
+        Some(KrakenTriggerSignal::Last) => Some(TriggerType::LastPrice),
+        Some(KrakenTriggerSignal::Mark) => Some(TriggerType::MarkPrice),
+        Some(KrakenTriggerSignal::Index) => Some(TriggerType::IndexPrice),
+        None => Some(TriggerType::Default),
     }
 }
 
@@ -93,7 +173,8 @@ pub fn parse_spot_instrument(
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
     let symbol_str = definition.wsname.as_ref().unwrap_or(&definition.altname);
-    let instrument_id = InstrumentId::new(Symbol::new(symbol_str.as_str()), *KRAKEN_VENUE);
+    let normalized_symbol = normalize_spot_symbol(symbol_str);
+    let instrument_id = InstrumentId::new(Symbol::new(&normalized_symbol), *KRAKEN_VENUE);
     let raw_symbol = Symbol::new(pair_name);
 
     let base_currency = get_currency(definition.base.as_str());
@@ -151,10 +232,10 @@ pub fn parse_spot_instrument(
         None,
         None,
         None,
+        None,
+        None,
         maker_fee,
         taker_fee,
-        None,
-        None,
         ts_event,
         ts_init,
     );
@@ -181,17 +262,41 @@ pub fn parse_futures_instrument(
     let base_currency = get_currency(&instrument.base);
     let quote_currency = get_currency(&instrument.quote);
 
-    let is_inverse = instrument.instrument_type.contains("inverse");
+    let is_inverse = instrument.instrument_type == KrakenInstrumentType::FuturesInverse;
     let settlement_currency = if is_inverse {
         base_currency
     } else {
         quote_currency
     };
 
-    let price_increment = Price::from(instrument.tick_size.to_string());
+    // Derive precision from tick_size string representation to handle non-power-of-10
+    // tick sizes correctly (e.g., 0.25, 2.5)
+    let tick_size = instrument.tick_size;
+    let price_precision = precision_from_str(&tick_size.to_string());
+    if price_precision > FIXED_PRECISION {
+        anyhow::bail!(
+            "Cannot parse instrument '{}': tick_size {tick_size} requires precision {price_precision} \
+             which exceeds FIXED_PRECISION ({FIXED_PRECISION})",
+            instrument.symbol
+        );
+    }
+    let price_increment = Price::new(tick_size, price_precision);
 
-    // Contract size precision: Kraken futures typically use integer contracts
-    let size_precision = if instrument.contract_size.fract() == 0.0 {
+    // Use contract_value_trade_precision for the tradeable size increment
+    // Positive values (e.g., 3) mean fractional sizes (0.001)
+    // Negative values (e.g., -3) mean multiples of powers of 10 (1000) - used for meme coins
+    // Zero means whole number increments (1)
+    let (_size_precision, size_increment) = if instrument.contract_value_trade_precision >= 0 {
+        let precision = instrument.contract_value_trade_precision as u8;
+        let increment = Quantity::new(10.0_f64.powi(-(precision as i32)), precision);
+        (precision, increment)
+    } else {
+        // Negative precision: increment is 10^abs(precision), e.g., -3 → 1000
+        let increment_value = 10.0_f64.powi(-instrument.contract_value_trade_precision);
+        (0, Quantity::new(increment_value, 0))
+    };
+
+    let multiplier_precision = if instrument.contract_size.fract() == 0.0 {
         0
     } else {
         instrument
@@ -201,9 +306,10 @@ pub fn parse_futures_instrument(
             .nth(1)
             .map_or(0, |s| s.len() as u8)
     };
-    let size_increment = Quantity::new(instrument.contract_size, size_precision);
-
-    let multiplier = Some(Quantity::new(instrument.contract_size, size_precision));
+    let multiplier = Some(Quantity::new(
+        instrument.contract_size,
+        multiplier_precision,
+    ));
 
     // Use first margin level if available
     let (margin_init, margin_maint) = instrument
@@ -247,13 +353,11 @@ pub fn parse_futures_instrument(
 }
 
 fn parse_price(value: &str, field: &str) -> anyhow::Result<Price> {
-    Price::from_str(value)
-        .map_err(|err| anyhow::anyhow!("Failed to parse {field}='{value}': {err}"))
+    Price::from_str(value).map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
 }
 
 fn parse_quantity(value: &str, field: &str) -> anyhow::Result<Quantity> {
-    Quantity::from_str(value)
-        .map_err(|err| anyhow::anyhow!("Failed to parse {field}='{value}': {err}"))
+    Quantity::from_str(value).map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
 }
 
 /// Returns a currency from the internal map or creates a new crypto currency.
@@ -451,7 +555,9 @@ pub fn parse_order_status_report(
     let order_type = order.descr.ordertype.into();
     let order_status = order.status.into();
 
-    let time_in_force = if order.expiretm.is_some() {
+    // Kraken returns expiretm=0 for GTC orders, so check for actual expiration value
+    let has_expiration = order.expiretm.is_some_and(|t| t > 0.0);
+    let time_in_force = if has_expiration {
         TimeInForce::Gtd
     } else if order.oflags.contains("ioc") {
         TimeInForce::Ioc
@@ -502,10 +608,16 @@ pub fn parse_order_status_report(
         })
         .transpose()?;
 
-    let expire_time = order
-        .expiretm
-        .map(|t| parse_millis_timestamp(t, "order.expiretm"))
-        .transpose()?;
+    let expire_time = if has_expiration {
+        order
+            .expiretm
+            .map(|t| parse_millis_timestamp(t, "order.expiretm"))
+            .transpose()?
+    } else {
+        None
+    };
+
+    let trigger_type = parse_trigger_type(order_type, order.trigger);
 
     Ok(OrderStatusReport {
         account_id,
@@ -530,27 +642,43 @@ pub fn parse_order_status_report(
         expire_time,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
         display_qty: None,
-        avg_px: if !order.cost.is_empty() && !order.vol_exec.is_empty() && order.vol_exec != "0" {
-            let cost = parse_decimal(&order.cost)?;
-            let vol_exec = parse_decimal(&order.vol_exec)?;
-            if vol_exec > dec!(0) {
-                Some(cost / vol_exec)
-            } else {
-                None
-            }
-        } else {
-            None
-        },
+        avg_px: compute_avg_px(order),
         post_only: order.oflags.contains("post"),
         reduce_only: false,
         cancel_reason: order.reason.clone(),
         ts_triggered: None,
     })
+}
+
+/// Computes the average price for a Kraken spot order.
+///
+/// Prefers the direct `avg_price` field if available, otherwise calculates from `cost / vol_exec`.
+fn compute_avg_px(order: &SpotOrder) -> Option<Decimal> {
+    if let Some(ref avg) = order.avg_price
+        && let Ok(v) = parse_decimal(avg)
+        && v > dec!(0)
+    {
+        return Some(v);
+    }
+
+    let cost = parse_decimal(&order.cost);
+    let vol_exec = parse_decimal(&order.vol_exec);
+    match (&cost, &vol_exec) {
+        (Ok(c), Ok(v)) if *v > dec!(0) => Some(*c / *v),
+        _ => {
+            if let Ok(v) = &vol_exec
+                && *v > dec!(0)
+            {
+                log::warn!("Cannot compute avg_px: cost={cost:?}, vol_exec={vol_exec:?}");
+            }
+            None
+        }
+    }
 }
 
 /// Parses a Kraken spot trade into a Nautilus FillReport.
@@ -652,6 +780,8 @@ pub fn parse_futures_order_status_report(
         .stop_price
         .map(|p| Price::new(p, instrument.price_precision()));
 
+    let trigger_type = parse_futures_trigger_type(order_type, order.trigger_signal);
+
     Ok(OrderStatusReport {
         account_id,
         instrument_id,
@@ -675,7 +805,7 @@ pub fn parse_futures_order_status_report(
         expire_time: None,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
@@ -729,6 +859,10 @@ pub fn parse_futures_order_event_status_report(
         .stop_price
         .map(|p| Price::new(p, instrument.price_precision()));
 
+    // FuturesOrderEvent doesn't have trigger_signal, so we pass None
+    // This will default to TriggerType::Default for conditional orders
+    let trigger_type = parse_futures_trigger_type(order_type, None);
+
     Ok(OrderStatusReport {
         account_id,
         instrument_id,
@@ -752,7 +886,7 @@ pub fn parse_futures_order_event_status_report(
         expire_time: None,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
@@ -838,13 +972,14 @@ pub fn parse_futures_position_status_report(
     };
 
     let quantity = Quantity::new(position.size, instrument.size_precision());
+    let size_decimal = Decimal::from_str(&position.size.to_string()).unwrap_or(dec!(0));
     let signed_decimal_qty = match position_side {
-        PositionSideSpecified::Long => Decimal::from_f64_retain(position.size).unwrap_or(dec!(0)),
-        PositionSideSpecified::Short => -Decimal::from_f64_retain(position.size).unwrap_or(dec!(0)),
+        PositionSideSpecified::Long => size_decimal,
+        PositionSideSpecified::Short => -size_decimal,
         PositionSideSpecified::Flat => dec!(0),
     };
 
-    let avg_px_open = Some(Decimal::from_f64_retain(position.price).unwrap_or(dec!(0)));
+    let avg_px_open = Decimal::from_str(&position.price.to_string()).ok();
 
     Ok(PositionStatusReport {
         account_id,
@@ -924,10 +1059,6 @@ pub fn bar_type_to_futures_resolution(bar_type: BarType) -> anyhow::Result<&'sta
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
@@ -985,13 +1116,17 @@ mod tests {
                 assert!(pair.price_increment.as_f64() > 0.0);
                 assert!(pair.size_increment.as_f64() > 0.0);
                 assert!(pair.min_quantity.is_some());
+                assert_eq!(pair.maker_fee, dec!(0.0025));
+                assert_eq!(pair.taker_fee, dec!(0.004));
+                assert_eq!(pair.margin_init, dec!(0));
+                assert_eq!(pair.margin_maint, dec!(0));
             }
             _ => panic!("Expected CurrencyPair"),
         }
     }
 
     #[rstest]
-    fn test_parse_futures_instrument() {
+    fn test_parse_futures_instrument_inverse() {
         let json = load_test_json("http_futures_instruments.json");
         let response: crate::http::models::FuturesInstrumentsResponse =
             serde_json::from_str(&json).unwrap();
@@ -1011,8 +1146,63 @@ mod tests {
                 assert!(perp.is_inverse);
                 assert_eq!(perp.price_increment.as_f64(), 0.5);
                 assert_eq!(perp.size_increment.as_f64(), 1.0);
+                assert_eq!(perp.size_precision(), 0);
                 assert_eq!(perp.margin_init, dec!(0.02));
                 assert_eq!(perp.margin_maint, dec!(0.01));
+            }
+            _ => panic!("Expected CryptoPerpetual"),
+        }
+    }
+
+    #[rstest]
+    fn test_parse_futures_instrument_flexible() {
+        let json = load_test_json("http_futures_instruments.json");
+        let response: crate::http::models::FuturesInstrumentsResponse =
+            serde_json::from_str(&json).unwrap();
+
+        let fut_instrument = &response.instruments[1];
+
+        let instrument = parse_futures_instrument(fut_instrument, TS, TS).unwrap();
+
+        match instrument {
+            InstrumentAny::CryptoPerpetual(perp) => {
+                assert_eq!(perp.id.venue.as_str(), "KRAKEN");
+                assert_eq!(perp.id.symbol.as_str(), "PF_ETHUSD");
+                assert_eq!(perp.raw_symbol.as_str(), "PF_ETHUSD");
+                assert_eq!(perp.base_currency.code.as_str(), "ETH");
+                assert_eq!(perp.quote_currency.code.as_str(), "USD");
+                assert_eq!(perp.settlement_currency.code.as_str(), "USD");
+                assert!(!perp.is_inverse);
+                assert_eq!(perp.price_increment.as_f64(), 0.1);
+                assert_eq!(perp.size_increment.as_f64(), 0.001);
+                assert_eq!(perp.size_precision(), 3);
+                assert_eq!(perp.margin_init, dec!(0.02));
+                assert_eq!(perp.margin_maint, dec!(0.01));
+            }
+            _ => panic!("Expected CryptoPerpetual"),
+        }
+    }
+
+    // PF_PEPEUSD has tickSize: 1e-10 which requires precision 10
+    // This test requires high-precision mode (FIXED_PRECISION=16) which is the default build
+    #[rstest]
+    fn test_parse_futures_instrument_negative_precision() {
+        let json = load_test_json("http_futures_instruments.json");
+        let response: crate::http::models::FuturesInstrumentsResponse =
+            serde_json::from_str(&json).unwrap();
+
+        // PF_PEPEUSD has contractValueTradePrecision: -3 (trades in multiples of 1000)
+        let fut_instrument = &response.instruments[2];
+
+        let instrument = parse_futures_instrument(fut_instrument, TS, TS).unwrap();
+
+        match instrument {
+            InstrumentAny::CryptoPerpetual(perp) => {
+                assert_eq!(perp.id.symbol.as_str(), "PF_PEPEUSD");
+                assert_eq!(perp.base_currency.code.as_str(), "PEPE");
+                assert!(!perp.is_inverse);
+                assert_eq!(perp.size_increment.as_f64(), 1000.0);
+                assert_eq!(perp.size_precision(), 0);
             }
             _ => panic!("Expected CryptoPerpetual"),
         }
@@ -1314,5 +1504,32 @@ mod tests {
         assert!(report.last_qty.as_f64() > 0.0);
         assert!(report.last_px.as_f64() > 0.0);
         assert!(report.commission.as_f64() > 0.0);
+    }
+
+    #[rstest]
+    #[case("XXBT", "XBT")]
+    #[case("XETH", "ETH")]
+    #[case("ZUSD", "USD")]
+    #[case("ZEUR", "EUR")]
+    #[case("BTC", "BTC")]
+    #[case("ETH", "ETH")]
+    #[case("USDT", "USDT")]
+    #[case("SOL", "SOL")]
+    fn test_normalize_currency_code(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(normalize_currency_code(input), expected);
+    }
+
+    #[rstest]
+    #[case("XBT/EUR", "BTC/EUR")]
+    #[case("XBT/USD", "BTC/USD")]
+    #[case("XBT/USDT", "BTC/USDT")]
+    #[case("ETH/USD", "ETH/USD")]
+    #[case("ETH/XBT", "ETH/BTC")]
+    #[case("SOL/XBT", "SOL/BTC")]
+    #[case("SOL/USD", "SOL/USD")]
+    #[case("BTC/USD", "BTC/USD")]
+    #[case("ETH/BTC", "ETH/BTC")]
+    fn test_normalize_spot_symbol(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(normalize_spot_symbol(input), expected);
     }
 }

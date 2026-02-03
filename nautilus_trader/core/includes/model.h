@@ -19,11 +19,6 @@
 
 #define DEPTH10_LEN 10
 
-/**
- * The maximum length of ASCII characters for a `TradeId` string value (including null terminator).
- */
-#define TRADE_ID_LEN 37
-
 #if defined(HIGH_PRECISION)
 /**
  * The maximum fixed-point precision.
@@ -607,6 +602,20 @@ typedef enum OptionKind {
      */
     PUT = 2,
 } OptionKind;
+
+/**
+ * Defines when OTO (One-Triggers-Other) child orders are released.
+ */
+typedef enum OtoTriggerMode {
+    /**
+     * Release child order(s) pro-rata to each partial fill (default).
+     */
+    PARTIAL = 0,
+    /**
+     * Release child order(s) only once the parent is fully filled.
+     */
+    FULL = 1,
+} OtoTriggerMode;
 
 /**
  * The status for a specific order.
@@ -1216,10 +1225,7 @@ typedef struct QuoteTick_t {
  * Maximum length is 36 characters.
  */
 typedef struct TradeId_t {
-    /**
-     * The trade match ID value as a fixed-length C string byte array (includes null terminator).
-     */
-    uint8_t value[TRADE_ID_LEN];
+    StackStr _0;
 } TradeId_t;
 
 /**
@@ -2137,6 +2143,11 @@ struct InstrumentId_t orderbook_deltas_instrument_id(const struct OrderBookDelta
 
 CVec orderbook_deltas_vec_deltas(const struct OrderBookDeltas_API *deltas);
 
+/**
+ * Returns `1` if the first delta is a `Clear` action (snapshot), `0` otherwise.
+ *
+ * Returns `0` for empty delta vectors to avoid panicking on malformed FFI input.
+ */
 uint8_t orderbook_deltas_is_snapshot(const struct OrderBookDeltas_API *deltas);
 
 uint8_t orderbook_deltas_flags(const struct OrderBookDeltas_API *deltas);
@@ -2147,6 +2158,13 @@ uint64_t orderbook_deltas_ts_event(const struct OrderBookDeltas_API *deltas);
 
 uint64_t orderbook_deltas_ts_init(const struct OrderBookDeltas_API *deltas);
 
+/**
+ * Drops a `CVec` of `OrderBookDelta` values.
+ *
+ * # Panics
+ *
+ * Panics if `CVec` invariants are violated (corrupted metadata).
+ */
 void orderbook_deltas_vec_drop(CVec v);
 
 /**
@@ -2510,6 +2528,21 @@ const char *option_kind_to_cstr(enum OptionKind value);
  * Panics if the C string does not correspond to a valid `OptionKind` variant.
  */
 enum OptionKind option_kind_from_cstr(const char *ptr);
+
+const char *oto_trigger_mode_to_cstr(enum OtoTriggerMode value);
+
+/**
+ * Returns an enum from a Python string.
+ *
+ * # Safety
+ *
+ * Assumes `ptr` is a valid C string pointer.
+ *
+ * # Panics
+ *
+ * Panics if the C string does not correspond to a valid `OtoTriggerMode` variant.
+ */
+enum OtoTriggerMode oto_trigger_mode_from_cstr(const char *ptr);
 
 const char *order_side_to_cstr(enum OrderSide value);
 
@@ -3000,8 +3033,7 @@ uint64_t synthetic_instrument_ts_init(const struct SyntheticInstrument_API *synt
  *
  * Assumes `formula_ptr` is a valid C string pointer.
  */
-uint8_t synthetic_instrument_is_valid_formula(const struct SyntheticInstrument_API *synth,
-                                              const char *formula_ptr);
+uint8_t synthetic_instrument_is_valid_formula(const char *formula_ptr, const char *components_ptr);
 
 /**
  * # Safety
@@ -3122,6 +3154,11 @@ double orderbook_get_quantity_for_price(struct OrderBook_API *book,
                                         struct Price_t price,
                                         enum OrderSide order_side);
 
+struct Quantity_t orderbook_get_quantity_at_level(const struct OrderBook_API *book,
+                                                  struct Price_t price,
+                                                  enum OrderSide order_side,
+                                                  uint8_t size_precision);
+
 /**
  * Updates the order book with a quote tick.
  *
@@ -3141,6 +3178,11 @@ void orderbook_update_quote_tick(struct OrderBook_API *book, const struct QuoteT
 void orderbook_update_trade_tick(struct OrderBook_API *book, const struct TradeTick_t *trade);
 
 CVec orderbook_simulate_fills(const struct OrderBook_API *book, struct BookOrder_t order);
+
+CVec orderbook_get_all_crossed_levels(const struct OrderBook_API *book,
+                                      enum OrderSide order_side,
+                                      struct Price_t price,
+                                      uint8_t size_precision);
 
 uint8_t orderbook_check_integrity(const struct OrderBook_API *book);
 
@@ -3167,8 +3209,22 @@ double level_size(const struct BookLevel_API *level);
 
 double level_exposure(const struct BookLevel_API *level);
 
+/**
+ * Drops a `CVec` of `BookLevel_API` values.
+ *
+ * # Panics
+ *
+ * Panics if `CVec` invariants are violated (corrupted metadata).
+ */
 void vec_drop_book_levels(CVec v);
 
+/**
+ * Drops a `CVec` of `BookOrder` values.
+ *
+ * # Panics
+ *
+ * Panics if `CVec` invariants are violated (corrupted metadata).
+ */
 void vec_drop_book_orders(CVec v);
 
 /**
@@ -3235,32 +3291,16 @@ struct Money_t money_from_raw(MoneyRaw raw, struct Currency_t currency);
 
 double money_as_f64(const struct Money_t *money);
 
-void money_add_assign(struct Money_t a, struct Money_t b);
-
-void money_sub_assign(struct Money_t a, struct Money_t b);
-
 struct Price_t price_new(double value, uint8_t precision);
 
 struct Price_t price_from_raw(PriceRaw raw, uint8_t precision);
 
 double price_as_f64(const struct Price_t *price);
 
-void price_add_assign(struct Price_t a, struct Price_t b);
-
-void price_sub_assign(struct Price_t a, struct Price_t b);
-
 struct Quantity_t quantity_new(double value, uint8_t precision);
 
 struct Quantity_t quantity_from_raw(QuantityRaw raw, uint8_t precision);
 
 double quantity_as_f64(const struct Quantity_t *qty);
-
-void quantity_add_assign(struct Quantity_t a, struct Quantity_t b);
-
-void quantity_add_assign_u64(struct Quantity_t a, uint64_t b);
-
-void quantity_sub_assign(struct Quantity_t a, struct Quantity_t b);
-
-void quantity_sub_assign_u64(struct Quantity_t a, uint64_t b);
 
 struct Quantity_t quantity_saturating_sub(struct Quantity_t a, struct Quantity_t b);

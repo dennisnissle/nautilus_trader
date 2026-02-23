@@ -137,8 +137,11 @@ class Base(ABC):
 
         """
         for req_id, req_name in self._req_id_to_name.items():
-            if req_name == name:
-                return req_id
+            try:
+                if req_name == name:
+                    return req_id
+            except TypeError:
+                pass
 
         return None
 

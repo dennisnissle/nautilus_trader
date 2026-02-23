@@ -105,7 +105,7 @@ class InteractiveBrokersClientContractMixin(BaseMixin):
 
             request.handle()
 
-            return await self._await_request(request, 20)
+            return await self._await_request(request, 60)
         else:
             self._log.info(f"Request already exist for {request}")
             return None

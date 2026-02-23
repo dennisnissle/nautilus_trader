@@ -137,7 +137,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
 
         # For non-BAG contracts, use regular loading
         instrument_ids = await self.load_with_return_async(contract)
-        if instrument_ids is None:
+        if instrument_ids is None or len(instrument_ids) == 0:
             self._log.error(f"Failed to load instrument for contract {contract}")
             raise ValueError(f"Instrument not found for contract {contract}")
 
